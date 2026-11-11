@@ -1,0 +1,30 @@
+# runtime state
+/state/
+/logs/
+*.log
+
+# deps / build
+node_modules/
+dist/
+build/
+__pycache__/
+.venv/
+
+# local
+.env
+*.local.*
+.claude/settings.local.json
+.claude/batches
+.claude/plans/
+
+# OS / editor
+Thumbs.db
+.DS_Store
+.vscode/
+.idea/
+
+# experiments output
+experiments/**/hook.log
+experiments/**/release.txt
+experiments/**/result.txt
+experiments/**/settings.generated.json
