@@ -16,10 +16,15 @@
         plan-v2.md
         plan-v2-verify.md
         ...
-        todo.md
+        todo-v1.md
+        todo-v1-verify.md      ← CODE가 착수 전 todo 검증
+        todo-v2.md
+        ...
         code-log.md
 
-- 개정마다 새 plan 파일을 만든다. 이전 버전은 수정하지 않는다.
+- 개정마다 새 plan / todo 파일을 만든다. 이전 버전은 수정하지 않는다.
+- CODE는 todo를 검증해 `판정: PASS`일 때만 코딩을 시작한다. REVISE면 PLAN이 todo-v(N+1)을 쓴다.
+- plan은 v5-verify까지 자동으로 왕복하고, 그 뒤 REVISE면 사용자 확인 후에만 다음 버전을 쓴다.
 - 최신 plan의 첫 줄 `Status:`와 verify 파일의 마지막 줄 `판정: PASS|REVISE`가 상태 판정의 근거다.
 - plans 루트는 프로젝트별 설정값. 기본값 `.claude/plans/` (AISM, EWE 모두). **git 추적 대상이 아니다** — 작업용 파일이며, 남길 가치가 있는 결정은 ADR로 옮긴다.
 
