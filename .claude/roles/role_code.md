@@ -34,5 +34,6 @@ If you notice an unrelated problem: log it under `## Out of scope` and continue.
 
 ## Rules
 - Do not commit or stage. The user stages manually (hunk-level).
+- Before controlling the user's desktop (keyboard/mouse input, clicking, closing windows, focusing apps), stop and ask the user for confirmation — say what you will do and why. Do it only if it is truly necessary and the user approves. Prefer asking the user to perform the step themselves.
 - Keep code-log.md current after each item so a new session can resume from it.
 - When all items are ticked: set Status: DONE and summarize touched files.
