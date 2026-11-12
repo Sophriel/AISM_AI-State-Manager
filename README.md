@@ -13,7 +13,7 @@
 | [docs/OPEN_QUESTIONS.md](docs/OPEN_QUESTIONS.md) | 아직 결정하지 않은 것 |
 | [docs/decisions/](docs/decisions/) | 결정 기록 (ADR) |
 | [docs/prior-art.md](docs/prior-art.md) | 검토한 기존 도구와 차이점 |
-| [experiments/](experiments/) | 핵심 가정을 확인하는 작은 실험 |
+| [docs/experiments.md](docs/experiments.md) | 핵심 가정 검증 실험 기록 (실험 코드는 git 제외) |
 
 ## 이 레포의 작업 방식
 

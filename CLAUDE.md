@@ -13,7 +13,7 @@
 | `docs/FEATURES.md` | 기능 ID(R-/W-/S-/G-)와 우선순위, 마일스톤 |
 | `docs/OPEN_QUESTIONS.md` | 미결 사항 (Q-n) |
 | `docs/decisions/` | 확정된 결정 (ADR). **뒤집으려면 새 ADR을 쓴다** |
-| `experiments/` | 핵심 가정 검증 실험 (E-001: Stop 훅 파킹 — 검증 완료) |
+| `docs/experiments.md` | 핵심 가정 검증 실험 기록 (E-001~E-003). 실험 코드는 로컬 `experiments/` (git 제외) |
 | `.claude/roles/` | 역할 세션 시스템 프롬프트. `_workflow.md`가 공통 규약 |
 | `.claude/plans/` | 작업별 플랜 폴더 (git 제외) |
 
@@ -29,6 +29,7 @@
 
 - 사용자와는 한국어로. 코드 식별자·경로는 원문 그대로.
 - **커밋·푸시는 사용자가 요청할 때만.**
+- 실험 코드(`experiments/`)는 커밋하지 않는다. 결과는 `docs/experiments.md`에 기록한다.
 - 새 결정은 `docs/decisions/NNNN-*.md`로 남기고, 관련 Q-n은 OPEN_QUESTIONS에서 해소 표시.
 - 기능을 추가·변경하면 FEATURES.md의 ID와 상태를 함께 갱신.
 - Windows 우선: 경로·프로세스·줄바꿈(`.bat`은 CRLF)을 Windows 기준으로 생각한다.

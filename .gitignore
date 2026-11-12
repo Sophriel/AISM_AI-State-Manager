@@ -7,12 +7,14 @@
 node_modules/
 dist/
 build/
+server/public/
 __pycache__/
 .venv/
 
 # local
 .env
 *.local.*
+aism.config.json
 .claude/settings.local.json
 .claude/batches
 .claude/plans/
@@ -23,8 +25,5 @@ Thumbs.db
 .vscode/
 .idea/
 
-# experiments output
-experiments/**/hook.log
-experiments/**/release.txt
-experiments/**/result.txt
-experiments/**/settings.generated.json
+# experiments (local only — results go to docs/experiments.md)
+/experiments/
