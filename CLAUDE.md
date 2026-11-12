@@ -3,7 +3,18 @@
 역할이 고정된 Claude Code 세션(PLAN / VERIFY / CODE)을 Stop 훅과 파일 계약으로 이어 붙이는 **로컬 오케스트레이터**.
 사용자 1명, Windows 전용, 개인 도구.
 
-현재 단계: 기획 완료, 구현 전. 첫 마일스톤은 M1(PLAN⇄VERIFY 루프) — `docs/FEATURES.md` 상단.
+현재 단계: **M1(PLAN⇄VERIFY 루프) 구현 중** — `docs/FEATURES.md` 상단.
+
+## 명령
+
+```bat
+npm run dev    # 서버 + 웹 HMR 동시 실행 (개발)
+npm test       # vitest (server)
+npm run build  # 웹 UI → server/public, 서버 → server/dist
+npm start      # 빌드 산출물 실행 (node server/dist/index.js)
+```
+
+실행: `scripts\start_aism.bat` (서버 실행 + Edge 앱 모드로 UI 열기). 설정은 `aism.config.json` (`aism.config.example.json` 복사 후 수정).
 
 ## 어디에 무엇이 있나
 
@@ -14,7 +25,12 @@
 | `docs/OPEN_QUESTIONS.md` | 미결 사항 (Q-n) |
 | `docs/decisions/` | 확정된 결정 (ADR). **뒤집으려면 새 ADR을 쓴다** |
 | `docs/experiments.md` | 핵심 가정 검증 실험 기록 (E-001~E-003). 실험 코드는 로컬 `experiments/` (git 제외) |
-| `.claude/roles/` | 역할 세션 시스템 프롬프트. `_workflow.md`가 공통 규약 |
+| `server/` | Fastify 서버 (TypeScript). `src/`에 config·artifacts·machine·store·sessions·launcher·orchestrator·notify·index |
+| `web/` | React + Vite UI. `src/`에 App·api·components(TaskCard·Timeline) |
+| `hooks/stop.js` | Stop 훅 — 세션 Stop 시 서버 `/hook/stop`에 long-poll |
+| `roles/` | 범용 역할 프롬프트 (`_workflow.md`, `plan.md`, `verify.md`) |
+| `scripts/` | `start_aism.bat`(실행), `launch_session.bat`(세션 창), `write-*-bat.cjs`(CRLF 재생성) |
+| `.claude/roles/` | 역할 세션 시스템 프롬프트 원본. `_workflow.md`가 공통 규약 |
 | `.claude/plans/` | 작업별 플랜 폴더 (git 제외) |
 
 ## 확정된 전제 (ADR 요약)

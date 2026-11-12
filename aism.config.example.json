@@ -1,0 +1,28 @@
+{
+  "port": 4400,
+  "endpoints": {
+    "cloud": {},
+    "local": {
+      "ANTHROPIC_BASE_URL": "http://127.0.0.1:8080",
+      "ANTHROPIC_AUTH_TOKEN": "local",
+      "ANTHROPIC_MODEL": "Qwen3.8-27B-NVFP4-MTP-LOW",
+      "CLAUDE_CODE_AUTO_COMPACT_WINDOW": "200000"
+    }
+  },
+  "roles": {
+    "plan": { "endpoint": "cloud", "prompt": ["roles/_workflow.md", "roles/plan.md"] },
+    "verify": { "endpoint": "local", "prompt": ["roles/_workflow.md", "roles/verify.md"] }
+  },
+  "projects": {
+    "EWE": {
+      "root": "C:/Users/<you>/Desktop/Projects/Unreal Projects/EWE",
+      "plansDir": ".claude/plans",
+      "protectedPaths": ["Source/**", "Plugins/**", "Config/**", "Content/**"],
+      "roleOverlay": ".claude/aism/overlay.md"
+    }
+  },
+  "confirmFromVersion": 5,
+  "maxConsecutiveBlocks": 3,
+  "parkLimitSec": 3300,
+  "hookTimeoutSec": 3600
+}
