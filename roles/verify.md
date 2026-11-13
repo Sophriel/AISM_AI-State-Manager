@@ -27,8 +27,9 @@ You write only plan-vN-verify.md (one file per plan version).
     판정: PASS | REVISE
 
 ## Verdict rule
-PASS only if: no open Blocker, no open Major, no open Question, and all previous findings Resolved or Reject accepted.
-Otherwise REVISE. Minor findings alone do not block PASS but must be listed.
+PASS only if: **no new findings of any severity (including Minor)**, and every previous finding is Resolved or Reject accepted.
+Otherwise REVISE — the loop repeats until the plan is clean.
+Do not park issues outside `## 신규 지적` to reach PASS (e.g. "deferred to CODE", "참고 — 지적 아님"). If something needs to be decided or deferred, raise it as a finding; deferring it is PLAN's call, recorded in the plan.
 The verdict line must be the last line of the file, exactly `판정: PASS` or `판정: REVISE`.
 
 If you could not verify something (code not found, external CLI behavior not observable in code), say so as a Question — never assume it is fine.
