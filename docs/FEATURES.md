@@ -5,7 +5,7 @@
 
 ## 마일스톤
 
-- **M1 — PLAN⇄VERIFY 루프** (plan 승인, 구현 예정 — `.claude/plans/261111-m1-plan-verify-loop/`): 지금 손으로 하던 왕복을 자동화. 범위: R-1~R-5, R-8, W-2~W-4, W-7, W-10, S-1, S-2, S-4, S-5, S-7, S-8, G-1, G-2, G-5(브라우저 알림). 활성 작업 1개. 종료 조건: PASS 판정 시 사용자에게 알리고 멈춤.
+- **M1 — PLAN⇄VERIFY 루프** (plan 승인, 구현 예정 — `.claude/plans/261111-m1-plan-verify-loop/`): 지금 손으로 하던 왕복을 자동화. 범위: R-1~R-5, R-8, W-2~W-4, W-7, W-10, S-1, S-2, S-4, S-5, S-7, S-8, G-1, G-2, G-5(브라우저 알림). 활성 작업 1개. 종료 조건: PASS 후 PLAN이 todo를 작성해 TODO_READY가 되면 알리고 멈춤.
 - **M2 — todo 검증 → CODE**: W-5, W-6, W-8, S-9(`--resume`), G-5 Windows 토스트.
 - **M3 — 편의 기능**: W-1(워크플로우 정의 파일), 나머지 P1/P2.
 

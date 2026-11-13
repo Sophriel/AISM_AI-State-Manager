@@ -37,6 +37,8 @@
 | U4 | 공백 경로가 든 args.txt로 실행되나 | ✅ 정상, 역할 프롬프트·settings 적용 |
 | E2E | 파킹 → block 지시 → 계속 → 재파킹 → allow → 종료 | ✅ |
 
+**Stop 훅 stdin 필드** (server.log에 기록된 실제 payload, Claude Code 2026-11 기준): `session_id`, `transcript_path`, `cwd`, `permission_mode`, `hook_event_name`(`"Stop"`), `stop_hook_active`, `last_assistant_message`, 그 밖에 `prompt_id`, `effort`, `background_tasks`, `session_crons`, `scratchpad_dir`. 필드명은 snake_case.
+
 **발견 사항**
 
 - **F-1 [중요]** Fastify에서 클라이언트 이탈은 `request.raw.socket.on("close")`로 감지한다. `request.raw.on("close")`는 요청 본문 수신 완료 시에도 발화해 파킹 직후 가짜 끊김이 생긴다.
