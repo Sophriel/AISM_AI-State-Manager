@@ -30,13 +30,15 @@ export interface ActiveTask {
   project: string;
   folder: string | null;
   startedAt: number;
+  assigned: { plan: string | null; verify: string | null };
 }
 
 export type PendingAction =
   | { kind: "deliver"; role: Role; text: string }
   | { kind: "decision" }
   | { kind: "gate"; n: number }
-  | { kind: "pass"; n: number }
+  | { kind: "pass"; n: number; text: string }
+  | { kind: "todo" }
   | { kind: "describe" };
 
 export interface SessionView {
@@ -44,7 +46,7 @@ export interface SessionView {
   state: SessionState;
 }
 
-// 서버 이벤트 (state/events.jsonl 한 줄). 타입: stop/reply/launch/bind/notify/detach/close-task.
+// 서버 이벤트 (state/events.jsonl 한 줄). 타입: stop/reply/hold/launch/bind/notify/detach/close-task.
 export interface AismEvent {
   ts: number;
   type: string;
@@ -53,6 +55,7 @@ export interface AismEvent {
 
 export interface State {
   activeTask: ActiveTask | null;
+  assignedState: { plan: SessionState | null; verify: SessionState | null };
   snapshot: Snapshot | null;
   sessions: Record<string, SessionView>;
   projects: string[];

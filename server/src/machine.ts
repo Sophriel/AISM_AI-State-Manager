@@ -12,6 +12,7 @@ export interface PeerView {
 export interface TaskRecord {
   notified: string[];
   consecutiveBlocks: Record<string, number>;
+  instructed: string[];
 }
 
 export interface MachineInput {
@@ -30,9 +31,8 @@ export type Action =
   | { kind: "reply"; sessionKey: string; reply: Reply }
   | { kind: "hold"; sessionKey: string }
   | { kind: "launch"; role: Role }
-  | { kind: "bind"; folder: string }
   | { kind: "notify"; key: string; level: "info" | "warn"; message: string; copyText?: string }
-  | { kind: "record"; notified?: string[]; consecutiveBlocks?: Record<string, number> }
+  | { kind: "record"; notified?: string[]; consecutiveBlocks?: Record<string, number>; instructed?: string[] }
   | { kind: "undeliverable"; role: Role; text: string };
 
 // 지시 문장 (한국어, 고정) — plan-v3 §3.6.
@@ -45,6 +45,13 @@ export function instructionPlanRevise(N: number): string {
 export function instructionVerdictLine(N: number): string {
   return `plan-v${N}-verify.md의 마지막 줄에 정확히 "판정: PASS" 또는 "판정: REVISE"를 써.`;
 }
+// W5 — PASS 이후 todo 지시 (plan-v8 §W5).
+export function instructionApproveAndTodo(N: number): string {
+  return `plan-v${N}-verify.md가 PASS다. plan-v${N}.md의 Status를 APPROVED로 바꾸고 todo를 작성한 뒤 Status를 TODO_READY로 바꿔. todo 파일은 todo-v1.md이고, 이미 있으면 다음 버전 번호로 써.`;
+}
+export function instructionFinishTodo(N: number): string {
+  return `plan-v${N}.md가 APPROVED 상태다. todo를 작성하고 Status를 TODO_READY로 바꿔. todo 파일은 todo-v1.md이고, 이미 있으면 다음 버전 번호로 써.`;
+}
 
 const part = (v: string | number | null): string => (v === null ? "null" : String(v));
 
@@ -52,6 +59,7 @@ export function evaluate(input: MachineInput): Action[] {
   const { sender, taskActive, snapshot, newPlanFolders, peers, record, config } = input;
   const actions: Action[] = [];
   const notified = new Set(record.notified);
+  const instructed = new Set(record.instructed);
   const counts: Record<string, number> = { ...record.consecutiveBlocks };
   let dirty = false;
 
@@ -74,7 +82,8 @@ export function evaluate(input: MachineInput): Action[] {
     }
   };
 
-  const block = (sessionKey: string, reason: string) => {
+  // true = 실제로 block을 냈다, false = 상한 초과로 allow를 냈다.
+  const block = (sessionKey: string, reason: string): boolean => {
     const next = (counts[sessionKey] ?? 0) + 1;
     if (next > config.maxConsecutiveBlocks) {
       // 연속 상한 초과 → 대신 allow + warn.
@@ -84,29 +93,36 @@ export function evaluate(input: MachineInput): Action[] {
         counts[sessionKey] = 0;
         dirty = true;
       }
-    } else {
-      actions.push({ kind: "reply", sessionKey, reply: { action: "block", reason } });
-      counts[sessionKey] = next;
-      dirty = true;
+      return false;
     }
+    actions.push({ kind: "reply", sessionKey, reply: { action: "block", reason } });
+    counts[sessionKey] = next;
+    dirty = true;
+    return true;
   };
 
-  // 지시 전달 규칙 (R1-4, R1-5).
-  const deliver = (role: Role, text: string) => {
+  // 지시 전달 규칙 (R1-4, R1-5). "blocked" = peer가 parked여서 block을 냈다.
+  const deliver = (role: Role, text: string): "blocked" | "none" => {
     const peer = peers[role];
     if (!peer || peer.state === "detached") {
       actions.push({ kind: "launch", role });
     } else if (peer.state === "parked") {
-      block(peer.sessionKey, text);
+      return block(peer.sessionKey, text) ? "blocked" : "none";
     } else if (peer.state === "idle") {
       actions.push({ kind: "undeliverable", role, text }); // notify는 내지 않는다 — T12가 처리.
     }
     // launching / working / unbound → 아무 Action 없음.
+    return "none";
   };
 
   const finish = (): Action[] => {
     if (dirty) {
-      actions.push({ kind: "record", notified: [...notified], consecutiveBlocks: counts });
+      actions.push({
+        kind: "record",
+        notified: [...notified],
+        consecutiveBlocks: counts,
+        instructed: [...instructed],
+      });
     }
     return actions;
   };
@@ -119,13 +135,9 @@ export function evaluate(input: MachineInput): Action[] {
     return finish();
   }
 
-  // 행 1 — PLAN (unbound).
+  // 행 1 — PLAN (unbound). 바인딩은 handleStop에서 바로 수행하므로(W1) 여기서는 0개/≥2개만 남음.
   if (sender.role === "plan" && !sender.bound) {
-    if (newPlanFolders.length === 1) {
-      // bind + allow만 반환 — 바인딩 후 재평가는 다음 Stop부터.
-      actions.push({ kind: "bind", folder: newPlanFolders[0] });
-      allow(sender.sessionKey);
-    } else if (newPlanFolders.length === 0) {
+    if (newPlanFolders.length === 0) {
       allow(sender.sessionKey);
     } else {
       allow(sender.sessionKey);
@@ -147,6 +159,18 @@ export function evaluate(input: MachineInput): Action[] {
       deliver("verify", instructionVerifyPlan(N ?? 0));
       return finish();
     }
+    // 행 4p — IN_REVIEW + PASS (W5): PLAN에 APPROVED·todo 작성을 지시.
+    if (snapshot.status === "IN_REVIEW" && snapshot.verdict === "PASS") {
+      const key = `todo-v${N ?? 0}`;
+      if (instructed.has(key)) {
+        allow(sender.sessionKey);
+      } else if (block(sender.sessionKey, instructionApproveAndTodo(N ?? 0))) {
+        instructed.add(key);
+        dirty = true;
+      }
+      // block이 false(상한 초과)면 기록 없이 끝 — allow는 block()이 이미 냈다.
+      return finish();
+    }
     // 행 4 — IN_REVIEW, verify-vN 있음 (사용자가 대화 중으로 간주).
     if (snapshot.status === "IN_REVIEW") {
       allow(sender.sessionKey);
@@ -157,14 +181,17 @@ export function evaluate(input: MachineInput): Action[] {
       allow(sender.sessionKey);
       return finish();
     }
-    // 행 5 — APPROVED / TODO_READY / 그 이후 (M2 범위, 사용자 주도).
-    if (
-      snapshot.status === "APPROVED" ||
-      snapshot.status === "TODO_READY" ||
-      snapshot.status === "IN_PROGRESS" ||
-      snapshot.status === "BLOCKED" ||
-      snapshot.status === "DONE"
-    ) {
+    // 행 5 — APPROVED / TODO_READY / 그 이후 (W5).
+    if (snapshot.status === "APPROVED") {
+      block(sender.sessionKey, instructionFinishTodo(N ?? 0));
+      return finish();
+    }
+    if (snapshot.status === "TODO_READY") {
+      allow(sender.sessionKey);
+      notify(`todo-ready-v${part(N)}`, "info", "todo 작성 완료 — CODE 단계는 CODE 세션에서 진행하세요");
+      return finish();
+    }
+    if (snapshot.status === "IN_PROGRESS" || snapshot.status === "BLOCKED" || snapshot.status === "DONE") {
       allow(sender.sessionKey);
       return finish();
     }
@@ -193,11 +220,16 @@ export function evaluate(input: MachineInput): Action[] {
     }
 
     if (snapshot.verdict === "PASS") {
-      // 행 8 — PASS.
+      // 행 8 — PASS (W5): PLAN에 todo 작성을 지시.
       allow(sender.sessionKey);
-      const planPeer = peers.plan;
-      if (planPeer && planPeer.state === "parked") allow(planPeer.sessionKey);
-      notify(`pass-v${part(N)}`, "info", `plan-v${part(N)} PASS`);
+      notify(`pass-v${part(N)}`, "info", `plan-v${part(N)} PASS — PLAN에 todo 작성을 지시합니다`);
+      const key = `todo-v${N ?? 0}`;
+      if (!instructed.has(key)) {
+        if (deliver("plan", instructionApproveAndTodo(N ?? 0)) === "blocked") {
+          instructed.add(key);
+          dirty = true;
+        }
+      }
       return finish();
     }
 

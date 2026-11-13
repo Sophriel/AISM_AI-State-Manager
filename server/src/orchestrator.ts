@@ -3,12 +3,13 @@ import fs from "node:fs";
 import path from "node:path";
 import type { AismConfig } from "./config.js";
 import { AISM_ROOT } from "./config.js";
-import type { Store } from "./store.js";
+import type { ActiveTask, Store } from "./store.js";
+import { newActiveTask } from "./store.js";
 import type { Sessions, SessionState } from "./sessions.js";
 import type { Snapshot } from "./artifacts.js";
 import { readSnapshot as defaultReadSnapshot, findNewPlanV1 as defaultFindNewPlanV1 } from "./artifacts.js";
-import type { Action, Role, Reply } from "./machine.js";
-import { evaluate } from "./machine.js";
+import type { Action, PeerView, Role, Reply } from "./machine.js";
+import { evaluate, instructionApproveAndTodo } from "./machine.js";
 import type { LaunchOptions } from "./launcher.js";
 import { launchSession as defaultLaunch } from "./launcher.js";
 import { NotifyHub } from "./notify.js";
@@ -17,7 +18,8 @@ export type PendingAction =
   | { kind: "deliver"; role: Role; text: string }
   | { kind: "decision" }
   | { kind: "gate"; n: number }
-  | { kind: "pass"; n: number }
+  | { kind: "pass"; n: number; text: string }
+  | { kind: "todo" }
   | { kind: "describe" };
 
 export interface OrchestratorDeps {
@@ -60,65 +62,109 @@ export class Orchestrator {
   // POST /hook/stop — body { sessionKey, payload }.
   handleStop(
     sessionKey: string,
-    payload: { sessionId?: string },
+    payload: { session_id?: string; last_assistant_message?: string },
     reply: (r: Reply) => void,
     onClose: (cb: () => void) => void,
   ): void {
+    // stop 이벤트 기록 (W3) — 어떤 판정보다 먼저.
+    const msg = payload.last_assistant_message?.slice(0, 80);
+    const stopRole = this.store.state.sessions[sessionKey]?.role;
+    this.store.appendEvent({
+      type: "stop",
+      sessionKey,
+      ...(stopRole ? { role: stopRole } : {}),
+      ...(msg ? { message: msg } : {}),
+    });
+
     const info = this.store.state.sessions[sessionKey];
     if (!info) {
       reply({ action: "allow" }); // 모르는 sessionKey — 즉시 allow.
       return;
     }
 
+    // 배정 게이트 (W4) — 현재 작업에 배정된 세션이 아니면 즉시 allow (undelivered·session_id·평가 모두 생략).
+    const task = this.store.state.activeTask;
+    const role =
+      task && (task.assigned.plan === sessionKey ? "plan" : task.assigned.verify === sessionKey ? "verify" : null);
+    if (!role) {
+      reply({ action: "allow" });
+      return;
+    }
+
     // 그 role의 undelivered 항목 삭제 (사용자가 창에서 진행했으므로).
-    this.removeUndelivered(info.role);
+    this.removeUndelivered(role);
 
     // session_id 처리 + 파킹. 비활성 id면 이미 allow.
-    const { handled } = this.sessions.onStop(sessionKey, payload.sessionId ?? "", reply, onClose);
+    const { handled } = this.sessions.onStop(sessionKey, payload.session_id ?? "", reply, onClose);
     if (handled) return;
 
-    // MachineInput 구성.
-    const snapshot = info.folder !== null ? this.taskSnapshot(info.project, info.folder) : emptySnapshot();
-    const newPlanFolders =
-      info.role === "plan" && info.folder === null
-        ? this.findNewPlanV1(this.plansDir(info.project), info.launchedAt)
-        : [];
+    // W1 — 바인딩한 Stop에서 바로 평가: 새 plan-v1이 정확히 1개면 bind 후 그 자리에서 평가.
+    let newPlanFolders: string[] = [];
+    if (role === "plan" && task.folder === null) {
+      const found = this.findNewPlanV1(this.plansDir(task.project), task.startedAt);
+      if (found.length === 1) {
+        this.bindTask(found[0], sessionKey);
+      } else {
+        newPlanFolders = found; // 0개 또는 ≥2개 — 평가는 행 1이 처리.
+      }
+    }
+    const snapshot = task.folder !== null ? this.taskSnapshot(task.project, task.folder) : emptySnapshot();
     const actions = evaluate({
-      sender: { sessionKey, role: info.role, bound: info.folder !== null },
-      taskActive: this.store.state.activeTask !== null,
+      sender: { sessionKey, role, bound: task.folder !== null },
+      taskActive: true, // 배정 게이트 통과 시 activeTask는 항상 존재.
       snapshot,
       newPlanFolders,
-      peers: this.sessions.peersFor(info.project, info.folder),
-      record: this.store.state.record,
+      peers: this.peersOf(task),
+      record: task.record,
       config: { confirmFromVersion: this.config.confirmFromVersion, maxConsecutiveBlocks: this.config.maxConsecutiveBlocks },
     });
 
-    this.applyActions(actions, sessionKey);
+    this.applyActions(actions);
+  }
+
+  // 현재 작업에 배정된 역할별 세션 뷰 (W4).
+  private peersOf(task: ActiveTask): { plan?: PeerView; verify?: PeerView } {
+    const result: { plan?: PeerView; verify?: PeerView } = {};
+    for (const role of ["plan", "verify"] as const) {
+      const key = task.assigned[role];
+      if (key) result[role] = { sessionKey: key, state: this.sessions.stateOf(key) ?? "detached" };
+    }
+    return result;
+  }
+
+  // 역할 배정 (W4) — 이전 키가 있으면 allow("unassigned")로 방출 후 교체.
+  private assign(task: ActiveTask, role: Role, sessionKey: string): void {
+    const prev = task.assigned[role];
+    if (prev && prev !== sessionKey) this.sessions.resolve(prev, { action: "allow" }, "unassigned");
+    task.assigned[role] = sessionKey;
   }
 
   // Action 적용.
-  private applyActions(actions: Action[], senderKey: string): void {
+  private applyActions(actions: Action[]): void {
     for (const action of actions) {
       switch (action.kind) {
         case "reply":
           this.sessions.resolve(action.sessionKey, action.reply);
           break;
         case "hold":
-          // pending 유지 — 세션이 계속 파킹.
+          // pending 유지 — 세션이 계속 파킹. hold 이벤트 기록 (W3).
+          this.store.appendEvent({ type: "hold", sessionKey: action.sessionKey });
           break;
         case "launch":
           this.launchRole(action.role);
           break;
-        case "bind":
-          this.bindTask(action.folder, senderKey);
-          break;
         case "notify":
           this.emitNotify(action.key, action.level, action.message, action.copyText);
           break;
-        case "record":
-          if (action.notified) this.store.state.record.notified = action.notified;
-          if (action.consecutiveBlocks) this.store.state.record.consecutiveBlocks = action.consecutiveBlocks;
+        case "record": {
+          const task = this.store.state.activeTask;
+          if (task) {
+            if (action.notified) task.record.notified = action.notified;
+            if (action.consecutiveBlocks) task.record.consecutiveBlocks = action.consecutiveBlocks;
+            if (action.instructed) task.record.instructed = action.instructed;
+          }
           break;
+        }
         case "undeliverable":
           this.addUndelivered(action.role, action.text);
           break;
@@ -141,6 +187,7 @@ export class Orchestrator {
       store: this.store,
     });
     this.sessions.register(result.sessionKey, role === "plan" && task.folder === null ? "unbound" : "launching");
+    this.assign(task, role, result.sessionKey);
     this.store.appendEvent({ type: "launch", role, sessionKey: result.sessionKey });
   }
 
@@ -153,16 +200,20 @@ export class Orchestrator {
     this.store.appendEvent({ type: "bind", folder, sessionKey: senderKey });
   }
 
-  // undeliverable Action — undelivered에 추가 + SSE notify.
+  // undeliverable Action — activeTask.undelivered에 추가 + SSE notify.
   private addUndelivered(role: Role, text: string): void {
-    const filtered = this.store.state.undelivered.filter((u) => u.role !== role);
+    const task = this.store.state.activeTask;
+    if (!task) return;
+    const filtered = task.undelivered.filter((u) => u.role !== role);
     filtered.push({ role, text });
-    this.store.state.undelivered = filtered;
+    task.undelivered = filtered;
     this.emitNotify(`undeliverable-${role}`, "info", `${role.toUpperCase()} 창에 다음을 입력하세요`, text);
   }
 
   private removeUndelivered(role: Role): void {
-    this.store.state.undelivered = this.store.state.undelivered.filter((u) => u.role !== role);
+    const task = this.store.state.activeTask;
+    if (!task) return;
+    task.undelivered = task.undelivered.filter((u) => u.role !== role);
   }
 
   // SSE notify + 이벤트 기록.
@@ -183,8 +234,13 @@ export class Orchestrator {
     for (const [key, info] of Object.entries(this.store.state.sessions)) {
       sessions[key] = { role: info.role, state: this.sessions.stateOf(key) ?? "detached" };
     }
+    const assignedState = {
+      plan: task?.assigned.plan ? (this.sessions.stateOf(task.assigned.plan) ?? "detached") : null,
+      verify: task?.assigned.verify ? (this.sessions.stateOf(task.assigned.verify) ?? "detached") : null,
+    };
     return {
       activeTask: task,
+      assignedState,
       snapshot: task && task.folder !== null ? this.taskSnapshot(task.project, task.folder) : null,
       sessions,
       projects: Object.keys(this.config.projects),
@@ -195,13 +251,12 @@ export class Orchestrator {
 
   // pendingAction — 위에서부터 처음 맞는 하나만.
   pendingAction(): PendingAction | null {
-    const state = this.store.state;
-    if (state.undelivered.length > 0) {
-      const last = state.undelivered[state.undelivered.length - 1];
+    const task = this.store.state.activeTask;
+    if (!task) return null;
+    if (task.undelivered.length > 0) {
+      const last = task.undelivered[task.undelivered.length - 1];
       return { kind: "deliver", role: last.role, text: last.text };
     }
-    const task = state.activeTask;
-    if (!task) return null;
     if (task.folder === null) return { kind: "describe" };
 
     const projectCfg = this.config.projects[task.project];
@@ -215,7 +270,10 @@ export class Orchestrator {
       );
       if (!nextPlanExists) return { kind: "gate", n: N };
     }
-    if (snapshot.verdict === "PASS" && snapshot.status === "IN_REVIEW") return { kind: "pass", n: N ?? 0 };
+    if (snapshot.verdict === "PASS" && snapshot.status === "IN_REVIEW") {
+      return { kind: "pass", n: N ?? 0, text: instructionApproveAndTodo(N ?? 0) };
+    }
+    if (snapshot.status === "TODO_READY") return { kind: "todo" };
     return null;
   }
 
@@ -223,7 +281,8 @@ export class Orchestrator {
   newTask(project: string): { ok: boolean; status: number; error?: string } {
     if (this.store.state.activeTask) return { ok: false, status: 409, error: "active task exists" };
     if (!this.config.projects[project]) return { ok: false, status: 404, error: "unknown project" };
-    this.store.state.activeTask = { project, folder: null, startedAt: Date.now() };
+    const task = newActiveTask(project, Date.now());
+    this.store.state.activeTask = task;
     const result = this.launch({
       config: this.config,
       project,
@@ -233,24 +292,26 @@ export class Orchestrator {
       store: this.store,
     });
     this.sessions.register(result.sessionKey, "unbound");
+    this.assign(task, "plan", result.sessionKey);
     this.store.appendEvent({ type: "launch", role: "plan", sessionKey: result.sessionKey });
     this.store.save();
     this.broadcastState();
     return { ok: true, status: 200 };
   }
 
-  // POST /api/tasks/relaunch.
+  // POST /api/tasks/relaunch — 배정 기준 (W4).
   relaunch(role: Role): { ok: boolean; status: number; error?: string } {
     const task = this.store.state.activeTask;
     if (!task) return { ok: false, status: 409, error: "no active task" };
-    if (task.folder === null) return { ok: false, status: 409, error: "folder is null" };
-    const existing = Object.entries(this.store.state.sessions).find(
-      ([, info]) => info.role === role && info.project === task.project && info.folder === task.folder,
-    );
-    if (existing) {
-      const st = this.sessions.stateOf(existing[0]) ?? "detached";
-      if (st !== "detached") return { ok: false, status: 409, error: `session is ${st}` };
-    }
+    if (role === "verify" && task.folder === null) return { ok: false, status: 409, error: "folder is null" };
+    const assignedKey = task.assigned[role];
+    const st = assignedKey ? (this.sessions.stateOf(assignedKey) ?? "detached") : null;
+    const allowed =
+      st === null ||
+      st === "detached" ||
+      st === "idle" ||
+      (role === "plan" && task.folder === null && st === "unbound");
+    if (!allowed) return { ok: false, status: 409, error: `session is ${st}` };
     const result = this.launch({
       config: this.config,
       project: task.project,
@@ -259,17 +320,21 @@ export class Orchestrator {
       aismRoot: this.aismRoot,
       store: this.store,
     });
-    this.sessions.register(result.sessionKey, "launching");
-    this.store.appendEvent({ type: "launch", role, sessionKey: result.sessionKey });
+    this.sessions.register(result.sessionKey, role === "plan" && task.folder === null ? "unbound" : "launching");
+    this.assign(task, role, result.sessionKey);
+    this.store.appendEvent({ type: "launch", role, sessionKey: result.sessionKey, relaunch: true });
     this.store.save();
     this.broadcastState();
     return { ok: true, status: 200 };
   }
 
-  // POST /api/tasks/close.
+  // POST /api/tasks/close — 배정된 세션의 pending을 allow("task-closed")로 해제 (W4).
   closeTask(): void {
-    for (const key of Object.keys(this.store.state.sessions)) {
-      this.sessions.resolve(key, { action: "allow" });
+    const task = this.store.state.activeTask;
+    if (task) {
+      for (const key of [task.assigned.plan, task.assigned.verify]) {
+        if (key) this.sessions.resolve(key, { action: "allow" }, "task-closed");
+      }
     }
     this.store.state.activeTask = null;
     this.store.appendEvent({ type: "close-task" });

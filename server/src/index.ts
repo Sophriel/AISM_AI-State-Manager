@@ -32,7 +32,10 @@ async function main(): Promise<void> {
 
   // POST /hook/stop — long-poll. hold면 응답 보류(연결 유지), allow/block이면 즉시 응답.
   app.post("/hook/stop", (request, reply) => {
-    const body = (request.body ?? {}) as { sessionKey?: string; payload?: { sessionId?: string } };
+    const body = (request.body ?? {}) as {
+      sessionKey?: string;
+      payload?: { session_id?: string; last_assistant_message?: string };
+    };
     if (!body.sessionKey) {
       reply.code(400).send({ error: "missing sessionKey" });
       return;

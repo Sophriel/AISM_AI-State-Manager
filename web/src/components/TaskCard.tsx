@@ -30,7 +30,9 @@ function pendingActionText(pa: PendingAction): string {
     case "gate":
       return `계속 개정하려면 PLAN 창에서 지시하세요 (v${pa.n})`;
     case "pass":
-      return `PASS — 다음 단계는 PLAN 창에서 지시하세요 (v${pa.n})`;
+      return pa.text;
+    case "todo":
+      return "todo 작성 완료 — CODE 세션에서 진행하세요";
     case "describe":
       return "PLAN 창에서 작업을 설명하세요";
   }
@@ -84,7 +86,7 @@ function TaskCard({ state, planState, verifyState }: Props) {
       {pa && (
         <div className="pending-action">
           <span className="pending-text">{pendingActionText(pa)}</span>
-          {pa.kind === "deliver" && (
+          {(pa.kind === "deliver" || pa.kind === "pass") && (
             <button
               type="button"
               className="copy-btn"

@@ -2,7 +2,7 @@
 // 상태 전이: launch 직후 launching(새 작업 PLAN은 unbound) → Stop 수신 시 평가 결과에 따라
 // hold→parked / block→working / allow→idle → 파킹 중 close→detached(pending 제거) → 다음 Stop 재평가.
 import type { Store } from "./store.js";
-import type { PeerView, Reply, Role } from "./machine.js";
+import type { Reply } from "./machine.js";
 
 export type SessionState = "launching" | "unbound" | "working" | "parked" | "idle" | "detached";
 
@@ -51,18 +51,6 @@ export class Sessions {
     return this.runtimes.get(sessionKey)?.state;
   }
 
-  // 같은 project·folder의 다른 역할 세션 뷰를 반환.
-  peersFor(project: string, folder: string | null): { plan?: PeerView; verify?: PeerView } {
-    const result: { plan?: PeerView; verify?: PeerView } = {};
-    for (const [sessionKey, info] of Object.entries(this.store.state.sessions)) {
-      if (info.project !== project || info.folder !== folder) continue;
-      const view: PeerView = { sessionKey, state: this.stateOf(sessionKey) ?? "detached" };
-      if (info.role === "plan" && !result.plan) result.plan = view;
-      else if (info.role === "verify" && !result.verify) result.verify = view;
-    }
-    return result;
-  }
-
   // Stop 수신. session_id 처리(R3-1) 후 pending 등록·파킹.
   // 비활성 session_id의 Stop은 평가 없이 즉시 allow — { handled: true } 반환.
   onStop(
@@ -85,24 +73,26 @@ export class Sessions {
       this.store.state.sessions[sessionKey] = info;
     }
 
-    // session_id 처리 (plan-v3 §6-1 R3-1).
-    if (!info.sessionIds.includes(claudeSessionId)) {
-      info.sessionIds.push(claudeSessionId);
-      if (info.activeSessionId === null) info.activeSessionId = claudeSessionId;
-    }
-    if (claudeSessionId !== info.activeSessionId) {
-      if (!info.switchedOnce) {
-        // 활성 전환 1회: 이전 활성의 pending을 allow로 해제 + notify + switchedOnce.
-        const prev = info.activeSessionId;
-        info.activeSessionId = claudeSessionId;
-        info.switchedOnce = true;
-        this.releasePending(sessionKey, { action: "allow" });
-        this.onNotify?.(`switch-${sessionKey}`, "warn", `세션 전환 감지 — 이전 세션(${prev})을 allow로 해제했습니다`);
-        this.store.save();
-      } else {
-        // 그 외 비활성 session_id의 Stop — 평가 없이 즉시 allow.
-        reply({ action: "allow" });
-        return { handled: true };
+    // session_id 처리 (plan-v3 §6-1 R3-1) — 빈 id면 건너뜀 (W2).
+    if (claudeSessionId !== "") {
+      if (!info.sessionIds.includes(claudeSessionId)) {
+        info.sessionIds.push(claudeSessionId);
+        if (info.activeSessionId === null) info.activeSessionId = claudeSessionId;
+      }
+      if (claudeSessionId !== info.activeSessionId) {
+        if (!info.switchedOnce) {
+          // 활성 전환 1회: 이전 활성의 pending을 allow로 해제 + notify + switchedOnce.
+          const prev = info.activeSessionId;
+          info.activeSessionId = claudeSessionId;
+          info.switchedOnce = true;
+          this.releasePending(sessionKey, { action: "allow" });
+          this.onNotify?.(`switch-${sessionKey}`, "warn", `세션 전환 감지 — 이전 세션(${prev})을 allow로 해제했습니다`);
+          this.store.save();
+        } else {
+          // 그 외 비활성 session_id의 Stop — 평가 없이 즉시 allow.
+          reply({ action: "allow" });
+          return { handled: true };
+        }
       }
     }
 
@@ -116,14 +106,23 @@ export class Sessions {
     return { handled: false };
   }
 
-  // 평가 결과 적용: pending을 reply로 방출하고 상태 전이.
-  resolve(sessionKey: string, r: Reply): void {
+  // 평가 결과 적용: pending을 reply로 방출하고 상태 전이 + reply 이벤트 기록 (W3).
+  // note: allow일 때 기록할 reason (unassigned, task-closed 등). 없으면 reason 키 생략.
+  resolve(sessionKey: string, r: Reply, note?: string): void {
     const runtime = this.runtimes.get(sessionKey);
     if (!runtime?.pending) return;
     this.clearTimer(runtime.pending.timer);
     runtime.pending.reply(r);
     runtime.pending = undefined;
     runtime.state = r.action === "block" ? "working" : "idle";
+    const event: { type: "reply"; sessionKey: string; action: "allow" | "block"; reason?: string } = {
+      type: "reply",
+      sessionKey,
+      action: r.action,
+    };
+    if (r.action === "block") event.reason = r.reason.slice(0, 80);
+    else if (note) event.reason = note;
+    this.store.appendEvent(event);
   }
 
   private getOrCreate(sessionKey: string): Runtime {

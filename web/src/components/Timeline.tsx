@@ -5,13 +5,29 @@ function str(v: unknown): string {
   return v == null ? "" : String(v);
 }
 
+// 역할 표시 — e.role이 있으면 대문자, 없으면 sessionKey 접두사(plan-/verify-)로, 둘 다 아니면 ?.
+function roleOf(e: AismEvent): string {
+  const role = e.role;
+  if (typeof role === "string") return role.toUpperCase();
+  const key = str(e.sessionKey);
+  if (key.startsWith("plan-")) return "PLAN";
+  if (key.startsWith("verify-")) return "VERIFY";
+  return "?";
+}
+
 function describeEvent(e: AismEvent): string {
   const t = new Date(e.ts).toLocaleTimeString();
   switch (e.type) {
-    case "stop":
-      return `${t}  Stop  ${str(e.sessionKey)}`;
-    case "reply":
-      return `${t}  Reply  ${str(e.sessionKey)} → ${str(e.action)}${e.reason ? ` (${str(e.reason)})` : ""}`;
+    case "stop": {
+      const message = str(e.message);
+      return `${t}  ${roleOf(e)} 응답 종료${message ? `: ${message}` : ""}`;
+    }
+    case "reply": {
+      if (e.action === "block") return `${t}  ${roleOf(e)} ← 지시: ${str(e.reason)}`;
+      return `${t}  ${roleOf(e)} ← 허용${e.reason ? ` (${str(e.reason)})` : ""}`;
+    }
+    case "hold":
+      return `${t}  ${roleOf(e)} 대기`;
     case "launch":
       return `${t}  Launch  ${str(e.role)}`;
     case "bind":

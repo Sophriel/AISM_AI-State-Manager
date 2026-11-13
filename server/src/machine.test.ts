@@ -5,6 +5,8 @@ import {
   instructionVerifyPlan,
   instructionPlanRevise,
   instructionVerdictLine,
+  instructionApproveAndTodo,
+  instructionFinishTodo,
   type MachineInput,
   type Action,
 } from "./machine.js";
@@ -16,7 +18,7 @@ function input(overrides: Partial<MachineInput> = {}): MachineInput {
     snapshot: { latestN: 3, status: "IN_REVIEW", verifyExists: false, verdict: null },
     newPlanFolders: [],
     peers: {},
-    record: { notified: [], consecutiveBlocks: {} },
+    record: { notified: [], consecutiveBlocks: {}, instructed: [] },
     config: { confirmFromVersion: 5, maxConsecutiveBlocks: 3 },
     ...overrides,
   };
@@ -54,17 +56,7 @@ describe("행 1 — PLAN unbound", () => {
     expect(actions).toEqual([{ kind: "reply", sessionKey: "plan-1", reply: { action: "allow" } }]);
   });
 
-  it("새 plan 폴더 1개 → bind + allow만", () => {
-    const actions = evaluate(
-      input({ sender: { sessionKey: "plan-1", role: "plan", bound: false }, newPlanFolders: ["261111-alpha"] }),
-    );
-    expect(actions).toEqual([
-      { kind: "bind", folder: "261111-alpha" },
-      { kind: "reply", sessionKey: "plan-1", reply: { action: "allow" } },
-    ]);
-  });
-
-  it("새 plan 폴더 2개 → allow + notify(warn, bind-ambiguous)", () => {
+  it("새 plan 폴더 2개(≥2) → allow + notify(warn, bind-ambiguous)", () => {
     const actions = evaluate(
       input({
         sender: { sessionKey: "plan-1", role: "plan", bound: false },
@@ -157,14 +149,67 @@ describe("행 4a — DRAFT / Status 없음", () => {
   });
 });
 
-describe("행 5 — APPROVED / TODO_READY / 그 이후", () => {
-  it.each(["APPROVED", "TODO_READY", "IN_PROGRESS", "BLOCKED", "DONE"] as const)(
-    "%s → allow, 알림 없음",
-    (status) => {
-      const actions = evaluate(input({ snapshot: { latestN: 3, status, verifyExists: true, verdict: "PASS" } }));
+describe("행 4p — IN_REVIEW + PASS (W5)", () => {
+  it("미기록 → block(instructionApproveAndTodo) + instructed에 기록", () => {
+    const actions = evaluate(
+      input({ snapshot: { latestN: 3, status: "IN_REVIEW", verifyExists: true, verdict: "PASS" } }),
+    );
+    const b = blockTo(actions, "plan-1");
+    expect(b?.reply).toEqual({ action: "block", reason: instructionApproveAndTodo(3) });
+    const rec = records(actions)[0];
+    expect(rec.instructed).toContain("todo-v3");
+  });
+
+  it("기록됨 → allow", () => {
+    const actions = evaluate(
+      input({
+        snapshot: { latestN: 3, status: "IN_REVIEW", verifyExists: true, verdict: "PASS" },
+        record: { notified: [], consecutiveBlocks: {}, instructed: ["todo-v3"] },
+      }),
+    );
+    expect(actions).toEqual([{ kind: "reply", sessionKey: "plan-1", reply: { action: "allow" } }]);
+  });
+
+  it("미기록이지만 consecutiveBlocks[plan-1] === maxConsecutiveBlocks → allow + notify(blocks-plan-1), 미기록", () => {
+    const actions = evaluate(
+      input({
+        snapshot: { latestN: 3, status: "IN_REVIEW", verifyExists: true, verdict: "PASS" },
+        record: { notified: [], consecutiveBlocks: { "plan-1": 3 }, instructed: [] },
+      }),
+    );
+    expect(allowTo(actions, "plan-1")).toBe(true);
+    expect(notifies(actions).map((x) => x.key)).toContain("blocks-plan-1");
+    const rec = records(actions)[0];
+    expect(rec.instructed ?? []).not.toContain("todo-v3");
+  });
+});
+
+describe("행 5 — APPROVED / TODO_READY / 그 이후 (W5)", () => {
+  it("5a. APPROVED → block(instructionFinishTodo)", () => {
+    const actions = evaluate(
+      input({ snapshot: { latestN: 3, status: "APPROVED", verifyExists: true, verdict: "PASS" } }),
+    );
+    const b = blockTo(actions, "plan-1");
+    expect(b?.reply).toEqual({ action: "block", reason: instructionFinishTodo(3) });
+  });
+
+  it("5b. TODO_READY → allow + notify(todo-ready-v3, info)", () => {
+    const actions = evaluate(
+      input({ snapshot: { latestN: 3, status: "TODO_READY", verifyExists: true, verdict: "PASS" } }),
+    );
+    expect(allowTo(actions, "plan-1")).toBe(true);
+    const n = notifies(actions);
+    expect(n.map((x) => [x.key, x.level])).toEqual([["todo-ready-v3", "info"]]);
+  });
+
+  it("5c. IN_PROGRESS / BLOCKED / DONE → allow, 알림 없음", () => {
+    for (const status of ["IN_PROGRESS", "BLOCKED", "DONE"] as const) {
+      const actions = evaluate(
+        input({ snapshot: { latestN: 3, status, verifyExists: true, verdict: "PASS" } }),
+      );
       expect(actions).toEqual([{ kind: "reply", sessionKey: "plan-1", reply: { action: "allow" } }]);
-    },
-  );
+    }
+  });
 });
 
 describe("행 6 — VERIFY REVISE, N < confirmFromVersion", () => {
@@ -211,31 +256,62 @@ describe("행 7 — VERIFY REVISE, N ≥ confirmFromVersion", () => {
   });
 });
 
-describe("행 8 — VERIFY PASS", () => {
-  it("allow + parked PLAN allow + notify(pass-v3, info)", () => {
+describe("행 8 — VERIFY PASS (W5)", () => {
+  it("PLAN parked → PLAN에 block(instructionApproveAndTodo) + record.instructed에 todo-v3", () => {
     const actions = evaluate(
       input({
         sender: { sessionKey: "verify-1", role: "verify", bound: true },
-        snapshot: { latestN: 3, status: "APPROVED", verifyExists: true, verdict: "PASS" },
+        snapshot: { latestN: 3, status: "IN_REVIEW", verifyExists: true, verdict: "PASS" },
         peers: { plan: { sessionKey: "plan-1", state: "parked" } },
       }),
     );
     expect(allowTo(actions, "verify-1")).toBe(true);
-    expect(allowTo(actions, "plan-1")).toBe(true);
-    const n = notifies(actions);
-    expect(n.map((x) => [x.key, x.level])).toEqual([["pass-v3", "info"]]);
+    const b = blockTo(actions, "plan-1");
+    expect(b?.reply).toEqual({ action: "block", reason: instructionApproveAndTodo(3) });
+    expect(notifies(actions).map((x) => x.key)).toEqual(["pass-v3"]);
+    const rec = records(actions)[0];
+    expect(rec.instructed).toContain("todo-v3");
   });
 
-  it("PLAN peer가 parked가 아니면 PLAN allow 없음", () => {
+  it("PLAN working → PLAN에 대한 Action 없음, instructed 미기록", () => {
     const actions = evaluate(
       input({
         sender: { sessionKey: "verify-1", role: "verify", bound: true },
-        snapshot: { latestN: 3, status: "APPROVED", verifyExists: true, verdict: "PASS" },
+        snapshot: { latestN: 3, status: "IN_REVIEW", verifyExists: true, verdict: "PASS" },
+        peers: { plan: { sessionKey: "plan-1", state: "working" } },
+      }),
+    );
+    expect(allowTo(actions, "verify-1")).toBe(true);
+    expect(replies(actions).some((r) => r.sessionKey === "plan-1")).toBe(false);
+    const rec = records(actions)[0];
+    expect(rec.instructed ?? []).not.toContain("todo-v3");
+  });
+
+  it("PLAN idle → undeliverable, instructed 미기록", () => {
+    const actions = evaluate(
+      input({
+        sender: { sessionKey: "verify-1", role: "verify", bound: true },
+        snapshot: { latestN: 3, status: "IN_REVIEW", verifyExists: true, verdict: "PASS" },
         peers: { plan: { sessionKey: "plan-1", state: "idle" } },
       }),
     );
     expect(allowTo(actions, "verify-1")).toBe(true);
-    expect(allowTo(actions, "plan-1")).toBe(false);
+    expect(actions).toContainEqual({ kind: "undeliverable", role: "plan", text: instructionApproveAndTodo(3) });
+    const rec = records(actions)[0];
+    expect(rec.instructed ?? []).not.toContain("todo-v3");
+  });
+
+  it("이미 instructed에 기록됨 → PLAN에 대한 Action 없음", () => {
+    const actions = evaluate(
+      input({
+        sender: { sessionKey: "verify-1", role: "verify", bound: true },
+        snapshot: { latestN: 3, status: "IN_REVIEW", verifyExists: true, verdict: "PASS" },
+        peers: { plan: { sessionKey: "plan-1", state: "parked" } },
+        record: { notified: [], consecutiveBlocks: {}, instructed: ["todo-v3"] },
+      }),
+    );
+    expect(allowTo(actions, "verify-1")).toBe(true);
+    expect(replies(actions).some((r) => r.sessionKey === "plan-1")).toBe(false);
   });
 });
 
@@ -258,7 +334,7 @@ describe("행 9 — VERIFY 판정 줄 형식 오류", () => {
       input({
         sender: { sessionKey: "verify-1", role: "verify", bound: true },
         snapshot: { latestN: 3, status: "IN_PROGRESS", verifyExists: true, verdict: "MALFORMED" },
-        record: { notified: [], consecutiveBlocks: { "verify-1": 3 } },
+        record: { notified: [], consecutiveBlocks: { "verify-1": 3 }, instructed: [] },
       }),
     );
     expect(allowTo(actions, "verify-1")).toBe(true);
@@ -301,7 +377,7 @@ describe("알림 중복 방지", () => {
     const first = evaluate(base);
     expect(notifies(first).map((x) => x.key)).toEqual(["decision-v3"]);
     const rec = records(first)[0];
-    const second = evaluate({ ...base, record: { notified: rec.notified ?? [], consecutiveBlocks: rec.consecutiveBlocks ?? {} } });
+    const second = evaluate({ ...base, record: { notified: rec.notified ?? [], consecutiveBlocks: rec.consecutiveBlocks ?? {}, instructed: rec.instructed ?? [] } });
     expect(notifies(second)).toHaveLength(0);
     expect(allowTo(second, "plan-1")).toBe(true);
   });

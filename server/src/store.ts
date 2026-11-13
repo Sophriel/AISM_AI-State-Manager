@@ -9,6 +9,9 @@ export interface ActiveTask {
   project: string;
   folder: string | null;
   startedAt: number;
+  assigned: { plan: string | null; verify: string | null };
+  record: TaskRecord;
+  undelivered: Undelivered[];
 }
 
 export interface SessionInfo {
@@ -29,18 +32,25 @@ export interface Undelivered {
 export interface State {
   activeTask: ActiveTask | null;
   sessions: Record<string, SessionInfo>;
-  record: TaskRecord;
-  undelivered: Undelivered[];
 }
 
-export type EventType = "stop" | "reply" | "launch" | "bind" | "notify" | "detach" | "close-task";
+export type EventType = "stop" | "reply" | "launch" | "bind" | "notify" | "detach" | "close-task" | "hold";
 
 const emptyState = (): State => ({
   activeTask: null,
   sessions: {},
-  record: { notified: [], consecutiveBlocks: {} },
-  undelivered: [],
 });
+
+export function newActiveTask(project: string, startedAt: number): ActiveTask {
+  return {
+    project,
+    folder: null,
+    startedAt,
+    assigned: { plan: null, verify: null },
+    record: { notified: [], consecutiveBlocks: {}, instructed: [] },
+    undelivered: [],
+  };
+}
 
 export class Store {
   private dir: string;
@@ -59,11 +69,24 @@ export class Store {
     try {
       const raw = fs.readFileSync(this.statePath, "utf8");
       const p = JSON.parse(raw) as Partial<State>;
+      // 기존 형식 호환: activeTask에 assigned/record/undelivered가 없으면 빈 값으로 채운다.
+      // 최상위 record/undelivered는 읽지 않고 버린다 (plan-v8 W6).
+      const t = p.activeTask;
+      const r = t?.record;
       return {
-        activeTask: p.activeTask ?? null,
+        activeTask: t
+          ? {
+              ...t,
+              assigned: t.assigned ?? { plan: null, verify: null },
+              record: {
+                notified: r?.notified ?? [],
+                consecutiveBlocks: r?.consecutiveBlocks ?? {},
+                instructed: r?.instructed ?? [],
+              },
+              undelivered: t.undelivered ?? [],
+            }
+          : null,
         sessions: p.sessions ?? {},
-        record: p.record ?? { notified: [], consecutiveBlocks: {} },
-        undelivered: p.undelivered ?? [],
       };
     } catch {
       return emptyState();

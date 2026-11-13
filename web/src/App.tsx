@@ -7,31 +7,21 @@ import {
   relaunch,
   type NotifyPayload,
   type Role,
-  type SessionState,
   type State,
 } from "./api";
 import TaskCard from "./components/TaskCard";
 import Timeline from "./components/Timeline";
 import "./App.css";
 
-// 배지·relaunch 판단용 우선순위 (높을수록 "더 활성").
-const PRIORITY: Record<string, number> = {
-  parked: 6,
-  working: 5,
-  launching: 4,
-  unbound: 3,
-  idle: 2,
-  detached: 1,
-};
-
-function topState(states: SessionState[]): string | null {
-  if (states.length === 0) return null;
-  return [...states].sort((a, b) => (PRIORITY[b] ?? 0) - (PRIORITY[a] ?? 0))[0];
-}
-
-// relaunch는 해당 역할 세션이 detached/없음일 때만.
-function canRelaunch(states: SessionState[]): boolean {
-  return states.every((s) => s === "detached"); // 빈 배열 → true
+// relaunch — 배정된 세션 상태 기준 (W4).
+function canRelaunch(state: State | null, role: Role): boolean {
+  const task = state?.activeTask;
+  if (!task) return false;
+  if (role === "verify" && task.folder === null) return false;
+  const s = state.assignedState[role];
+  if (s === null || s === "detached" || s === "idle") return true;
+  if (role === "plan" && task.folder === null && s === "unbound") return true;
+  return false;
 }
 
 function App() {
@@ -129,7 +119,17 @@ function App() {
     if (!project) return;
     void run(() => newTask(project));
   };
-  const handleRelaunch = (role: Role) => void run(() => relaunch(role));
+  const handleRelaunch = (role: Role) => {
+    const s = state?.assignedState?.[role];
+    if (
+      (s === "idle" || s === "unbound") &&
+      !window.confirm(
+        `이전 ${role.toUpperCase()} 창이 아직 열려 있다면 닫은 뒤 진행하세요. 이전 창은 더 이상 자동으로 지시받지 않습니다.`,
+      )
+    )
+      return;
+    void run(() => relaunch(role));
+  };
   const handleClose = () => {
     if (!window.confirm("작업을 종료할까요? 모든 대기 중인 세션이 allow로 해제됩니다.")) return;
     void run(() => closeTask());
@@ -138,20 +138,9 @@ function App() {
   const activeTask = state?.activeTask ?? null;
   const projects = state?.projects ?? [];
 
-  const planStates = state
-    ? Object.values(state.sessions)
-        .filter((s) => s.role === "plan")
-        .map((s) => s.state)
-    : [];
-  const verifyStates = state
-    ? Object.values(state.sessions)
-        .filter((s) => s.role === "verify")
-        .map((s) => s.state)
-    : [];
-
   const selectValue = activeTask ? activeTask.project : project;
-  const planDisabled = busy || !canRelaunch(planStates);
-  const verifyDisabled = busy || !canRelaunch(verifyStates);
+  const planDisabled = busy || !canRelaunch(state, "plan");
+  const verifyDisabled = busy || !canRelaunch(state, "verify");
 
   return (
     <div className="app" onClick={requestPermission}>
@@ -160,7 +149,11 @@ function App() {
         {error && <span className="error">{error}</span>}
       </header>
 
-      <TaskCard state={state} planState={topState(planStates)} verifyState={topState(verifyStates)} />
+      <TaskCard
+        state={state}
+        planState={state ? state.assignedState.plan : null}
+        verifyState={state ? state.assignedState.verify : null}
+      />
 
       <div className="controls">
         <div className="control-group">

@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { Store } from "./store.js";
+import { Store, newActiveTask } from "./store.js";
 
 let dir: string;
 
@@ -18,7 +18,7 @@ afterEach(() => {
 describe("Store", () => {
   it("저장 후 새 인스턴스로 로드하면 동일", () => {
     const a = new Store(dir);
-    a.state.activeTask = { project: "EWE", folder: "261111-alpha", startedAt: 1000 };
+    a.state.activeTask = { ...newActiveTask("EWE", 1000), folder: "261111-alpha" };
     a.state.sessions["plan-1"] = {
       role: "plan",
       project: "EWE",
@@ -28,8 +28,8 @@ describe("Store", () => {
       activeSessionId: "s1",
       switchedOnce: false,
     };
-    a.state.record = { notified: ["decision-v3"], consecutiveBlocks: { "verify-1": 2 } };
-    a.state.undelivered = [{ role: "verify", text: "지시 문장" }];
+    a.state.activeTask.record = { notified: ["decision-v3"], consecutiveBlocks: { "verify-1": 2 }, instructed: [] };
+    a.state.activeTask.undelivered = [{ role: "verify", text: "지시 문장" }];
     a.save();
 
     const b = new Store(dir);
@@ -38,12 +38,27 @@ describe("Store", () => {
 
   it("state.json이 없으면 빈 상태", () => {
     const s = new Store(dir);
-    expect(s.state).toEqual({
-      activeTask: null,
-      sessions: {},
-      record: { notified: [], consecutiveBlocks: {} },
-      undelivered: [],
-    });
+    expect(s.state).toEqual({ activeTask: null, sessions: {} });
+  });
+
+  it("기존 형식 state.json(최상위 record/undelivered) 로드 시 activeTask에 빈 값 채우고 최상위 필드 무시", () => {
+    const s = new Store(dir);
+    fs.writeFileSync(
+      path.join(dir, "state.json"),
+      JSON.stringify({
+        activeTask: { project: "EWE", folder: "261111-alpha", startedAt: 1000 },
+        sessions: {},
+        record: { notified: ["pass-v1"], consecutiveBlocks: {} },
+        undelivered: [{ role: "plan", text: "지시 문장" }],
+      }),
+      "utf8",
+    );
+    const t = s.load();
+    expect(t.activeTask?.assigned).toEqual({ plan: null, verify: null });
+    expect(t.activeTask?.record).toEqual({ notified: [], consecutiveBlocks: {}, instructed: [] });
+    expect(t.activeTask?.undelivered).toEqual([]);
+    expect("record" in t).toBe(false);
+    expect("undelivered" in t).toBe(false);
   });
 
   it("이벤트 3개 append 후 줄 수 3", () => {

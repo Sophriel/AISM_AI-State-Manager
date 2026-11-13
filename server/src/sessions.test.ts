@@ -116,23 +116,48 @@ describe("Sessions", () => {
     expect(r3).toEqual({ action: "allow" });
   });
 
-  it("peersFor — 같은 project·folder의 역할별 세션 반환", () => {
+  it("빈 session_id로 두 번 Stop — sessionIds·activeSessionId 불변, 둘 다 정상 파킹", () => {
     const store = makeStore();
-    store.state.sessions["verify-1"] = {
-      role: "verify",
-      project: "EWE",
-      folder: "261111-alpha",
-      launchedAt: 0,
-      sessionIds: ["v1"],
-      activeSessionId: "v1",
-      switchedOnce: false,
-    };
     const sessions = new Sessions(store, 3300, { setTimer, clearTimer });
-    sessions.register("plan-1", "working");
-    sessions.register("verify-1", "parked");
+    sessions.register("plan-1", "launching");
 
-    const peers = sessions.peersFor("EWE", "261111-alpha");
-    expect(peers.plan).toEqual({ sessionKey: "plan-1", state: "working" });
-    expect(peers.verify).toEqual({ sessionKey: "verify-1", state: "parked" });
+    let r1: Reply | null = null;
+    const res1 = sessions.onStop("plan-1", "", (r) => (r1 = r), () => {});
+    expect(res1.handled).toBe(false);
+    expect(sessions.stateOf("plan-1")).toBe("parked");
+
+    sessions.resolve("plan-1", { action: "allow" });
+    let r2: Reply | null = null;
+    const res2 = sessions.onStop("plan-1", "", (r) => (r2 = r), () => {});
+    expect(res2.handled).toBe(false);
+    expect(sessions.stateOf("plan-1")).toBe("parked");
+
+    // 빈 id는 기록되지 않고 전환도 감지되지 않는다.
+    expect(store.state.sessions["plan-1"].sessionIds).toEqual(["s1"]);
+    expect(store.state.sessions["plan-1"].activeSessionId).toBe("s1");
+    expect(store.state.sessions["plan-1"].switchedOnce).toBe(false);
+  });
+
+  it("resolve — 방출 시 reply 이벤트 기록 (block은 reason, allow는 note)", () => {
+    const store = makeStore();
+    const sessions = new Sessions(store, 3300, { setTimer, clearTimer });
+    sessions.register("plan-1", "launching");
+
+    sessions.onStop("plan-1", "s1", () => {}, () => {});
+    sessions.resolve("plan-1", { action: "block", reason: "지시 문장" });
+    let [e1] = store.readEvents();
+    expect(e1).toMatchObject({ type: "reply", sessionKey: "plan-1", action: "block", reason: "지시 문장" });
+
+    sessions.onStop("plan-1", "s1", () => {}, () => {});
+    sessions.resolve("plan-1", { action: "allow" }, "task-closed");
+    const events = store.readEvents();
+    expect(events[events.length - 1]).toMatchObject({ type: "reply", sessionKey: "plan-1", action: "allow", reason: "task-closed" });
+
+    // note 없으면 reason 키 생략.
+    sessions.onStop("plan-1", "s1", () => {}, () => {});
+    sessions.resolve("plan-1", { action: "allow" });
+    const last = store.readEvents().at(-1)!;
+    expect(last).toMatchObject({ type: "reply", sessionKey: "plan-1", action: "allow" });
+    expect("reason" in last).toBe(false);
   });
 });
