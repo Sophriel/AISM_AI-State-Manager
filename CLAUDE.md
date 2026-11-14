@@ -1,9 +1,9 @@
 # AISM (AI State Manager)
 
-역할이 고정된 Claude Code 세션(PLAN / VERIFY / CODE)을 Stop 훅과 파일 계약으로 이어 붙이는 **로컬 오케스트레이터**.
+역할이 고정된 Claude Code 세션(PLANNER / VERIFIER / CODER)을 Stop 훅과 파일 계약으로 이어 붙이는 **로컬 오케스트레이터**.
 사용자 1명, Windows 전용, 개인 도구.
 
-현재 단계: **M1(PLAN⇄VERIFY 루프) 구현 중** — `docs/FEATURES.md` 상단.
+현재 단계: **M1(PLANNER⇄VERIFIER 루프) 구현 중** — `docs/FEATURES.md` 상단.
 
 ## 명령
 
@@ -28,7 +28,7 @@ npm start      # 빌드 산출물 실행 (node server/dist/index.js)
 | `server/` | Fastify 서버 (TypeScript). `src/`에 config·artifacts·machine·store·sessions·launcher·orchestrator·notify·index |
 | `web/` | React + Vite UI. `src/`에 App·api·components(TaskCard·Timeline) |
 | `hooks/stop.js` | Stop 훅 — 세션 Stop 시 서버 `/hook/stop`에 long-poll |
-| `roles/` | 범용 역할 프롬프트 (`_workflow.md`, `plan.md`, `verify.md`) |
+| `roles/` | 범용 역할 프롬프트 (`_workflow.md`, `planner.md`, `verifier.md`) |
 | `scripts/` | `start_aism.bat`(실행), `launch_session.bat`(세션 창), `write-*-bat.cjs`(CRLF 재생성) |
 | `.claude/roles/` | 역할 세션 시스템 프롬프트 원본. `_workflow.md`가 공통 규약 |
 | `.claude/plans/` | 작업별 플랜 폴더 (git 제외) |

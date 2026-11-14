@@ -1,8 +1,8 @@
 # AI State Manager
 
-역할이 고정된 Claude Code 세션(PLAN / VERIFY / CODE 등)을 파일 계약과 상태 머신으로 이어 붙여, 세션이 끝나면 다음 작업이 자동으로 이어지게 하는 로컬 오케스트레이터.
+역할이 고정된 Claude Code 세션(PLANNER / VERIFIER / CODER 등)을 파일 계약과 상태 머신으로 이어 붙여, 세션이 끝나면 다음 작업이 자동으로 이어지게 하는 로컬 오케스트레이터.
 
-> 상태: M1(PLAN⇄VERIFY 루프) 구현 중. Windows 전용, 사용자 1명, 개인 도구.
+> 상태: M1(PLANNER⇄VERIFIER 루프) 구현 중. Windows 전용, 사용자 1명, 개인 도구.
 
 ## 설치
 
@@ -21,6 +21,8 @@ copy aism.config.example.json aism.config.json
 npm run build
 ```
 
+업그레이드할 때는 먼저 UI에서 작업을 종료하세요. 현재 형식과 다른 state.json은 무시되어(플랜 파일은 대상 레포에 그대로 남음) 진행 중이던 작업의 배정·알림 기록이 사라집니다. 설정 파일이 현재 형식과 다르면 서버가 고칠 항목을 알려 주니 aism.config.example.json에 맞춰 고치세요.
+
 ## 실행
 
 ```bat
@@ -31,13 +33,13 @@ scripts\start_aism.bat
 
 ## 사용 흐름
 
-1. UI에서 프로젝트를 고르고 **새 작업**을 누른다 — PLAN 세션이 새 터미널 창에 뜬다.
-2. PLAN 창에서 작업을 설명하면 PLAN이 `plan-v1.md`를 작성하고 멈춘다.
-3. 서버가 PLAN을 파킹하고 VERIFY 세션을 띄운다 — VERIFY가 `plan-v1-verify.md`에 `판정: PASS/REVISE`를 쓴다.
-4. REVISE면 PLAN이 지시를 받아 `plan-v2.md`를 만들고 다시 VERIFY로, PASS면 PLAN이 todo 작성 지시를 받아 TODO_READY가 되면 알리고 멈춘다.
+1. UI에서 프로젝트를 고르고 **새 작업**을 누른다 — PLANNER 세션이 새 터미널 창에 뜬다.
+2. PLANNER 창에서 작업을 설명하면 PLANNER가 `plan-v1.md`를 작성하고 멈춘다.
+3. 서버가 PLANNER를 파킹하고 VERIFIER 세션을 띄운다 — VERIFIER가 `plan-v1-verify.md`에 `판정: PASS/REVISE`를 쓴다.
+4. REVISE면 PLANNER가 지시를 받아 `plan-v2.md`를 만들고 다시 VERIFIER로, PASS면 PLANNER가 todo 작성 지시를 받아 TODO_READY가 되면 알리고 멈춘다.
 5. UI의 **작업 종료**로 작업을 끝낸다.
 
-플랜 폴더는 미리 만들지 말고, 새 작업을 시작한 뒤 PLAN 창에서 만들게 한다.
+플랜 폴더는 미리 만들지 말고, 새 작업을 시작한 뒤 PLANNER 창에서 만들게 한다.
 
 ## 문서
 
