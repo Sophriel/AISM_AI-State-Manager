@@ -1,13 +1,15 @@
 // T13 — 서버 API 클라이언트. 타입 정의 + fetch 래퍼.
-export type Role = "plan" | "verify";
+export type Role = "planner" | "verifier";
 
 export type SessionState =
-  | "launching"
   | "unbound"
   | "working"
   | "parked"
   | "idle"
   | "detached";
+
+// 표시 상태 (plan-v3 §3 B) — 내부 세션 상태를 사용자가 보는 눈높이로 압축.
+export type Display = "working" | "waiting" | "your-turn" | "idle" | "disconnected";
 
 export type Status =
   | "DRAFT"
@@ -30,7 +32,7 @@ export interface ActiveTask {
   project: string;
   folder: string | null;
   startedAt: number;
-  assigned: { plan: string | null; verify: string | null };
+  assigned: { planner: string | null; verifier: string | null };
 }
 
 export type PendingAction =
@@ -55,7 +57,8 @@ export interface AismEvent {
 
 export interface State {
   activeTask: ActiveTask | null;
-  assignedState: { plan: SessionState | null; verify: SessionState | null };
+  assignedState: { planner: SessionState | null; verifier: SessionState | null };
+  assignedDisplay: { planner: Display | null; verifier: Display | null };
   snapshot: Snapshot | null;
   sessions: Record<string, SessionView>;
   projects: string[];

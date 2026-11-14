@@ -71,9 +71,8 @@ export function launchSession(opts: LaunchOptions): { sessionKey: string; dir: s
   promptParts.push(header);
   fs.writeFileSync(path.join(dir, "prompt.md"), promptParts.join("\n\n") + "\n");
 
-  // settings.json — Stop 훅 + acceptEdits (F-5: 전역 plan mode 덮어쓰기). 경로는 /로.
+  // settings.json — Stop 훅만 (권한 모드는 args의 --permission-mode로 전달, T5). 경로는 /로.
   const settings = {
-    permissions: { defaultMode: "acceptEdits" },
     hooks: {
       Stop: [
         {
@@ -100,12 +99,13 @@ export function launchSession(opts: LaunchOptions): { sessionKey: string; dir: s
   envLines.push(`cd /d "${projectCfg.root}"`);
   fs.writeFileSync(path.join(dir, "env.bat"), envLines.join("\r\n") + "\r\n");
 
-  // args.txt (한 줄, ASCII) — prompt·settings·protectedPaths·name·(folder 있으면) 초기 프롬프트.
+  // args.txt (한 줄, ASCII) — prompt·settings·permission-mode·protectedPaths·name·(folder 있으면) 초기 프롬프트.
   const argsParts: string[] = [];
   argsParts.push(`--append-system-prompt-file "${toWin(path.join(dir, "prompt.md"))}"`);
   argsParts.push(`--settings "${toWin(path.join(dir, "settings.json"))}"`);
+  argsParts.push(`--permission-mode ${roleCfg.permissionMode ?? "acceptEdits"}`);
   for (const p of projectCfg.protectedPaths) {
-    argsParts.push(`--disallowedTools "Edit(${p})" "Write(${p})"`);
+    argsParts.push(`--disallowedTools "Edit(${p})"`);
   }
   argsParts.push(`--name "AISM ${role.toUpperCase()} ${folder ?? "new"}"`);
   if (folder) argsParts.push(`"AISM task: ${folder}"`);

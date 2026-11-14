@@ -1,10 +1,10 @@
 // T8 — 세션 레지스트리와 파킹. 메모리 상태 + Store 영속 정보.
-// 상태 전이: launch 직후 launching(새 작업 PLAN은 unbound) → Stop 수신 시 평가 결과에 따라
+// 상태 전이: launch 직후 working(새 작업 PLANNER는 unbound) → Stop 수신 시 평가 결과에 따라
 // hold→parked / block→working / allow→idle → 파킹 중 close→detached(pending 제거) → 다음 Stop 재평가.
 import type { Store } from "./store.js";
 import type { Reply } from "./machine.js";
 
-export type SessionState = "launching" | "unbound" | "working" | "parked" | "idle" | "detached";
+export type SessionState = "unbound" | "working" | "parked" | "idle" | "detached";
 
 type Timer = ReturnType<typeof setTimeout>;
 
@@ -62,7 +62,7 @@ export class Sessions {
     let info = this.store.state.sessions[sessionKey];
     if (!info) {
       info = {
-        role: "plan",
+        role: "planner",
         project: "",
         folder: null,
         launchedAt: 0,
@@ -128,7 +128,7 @@ export class Sessions {
   private getOrCreate(sessionKey: string): Runtime {
     let runtime = this.runtimes.get(sessionKey);
     if (!runtime) {
-      runtime = { state: "launching" };
+      runtime = { state: "working" };
       this.runtimes.set(sessionKey, runtime);
     }
     return runtime;

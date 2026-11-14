@@ -10,8 +10,8 @@
     }
   },
   "roles": {
-    "plan": { "endpoint": "cloud", "prompt": ["roles/_workflow.md", "roles/plan.md"] },
-    "verify": { "endpoint": "local", "prompt": ["roles/_workflow.md", "roles/verify.md"] }
+    "planner": { "endpoint": "cloud", "prompt": ["roles/_workflow.md", "roles/planner.md"], "permissionMode": "auto" },
+    "verifier": { "endpoint": "local", "prompt": ["roles/_workflow.md", "roles/verifier.md"], "permissionMode": "acceptEdits" }
   },
   "projects": {
     "EWE": {

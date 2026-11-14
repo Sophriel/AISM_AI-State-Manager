@@ -3,9 +3,12 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
+export const PERMISSION_MODES = ["default", "acceptEdits", "auto", "plan", "bypassPermissions"] as const;
+
 export interface RoleConfig {
   endpoint: string;
   prompt: string[];
+  permissionMode?: (typeof PERMISSION_MODES)[number];
 }
 
 export interface ProjectConfig {
@@ -18,7 +21,7 @@ export interface ProjectConfig {
 export interface AismConfig {
   port: number;
   endpoints: Record<string, Record<string, string>>;
-  roles: { plan: RoleConfig; verify: RoleConfig };
+  roles: { planner: RoleConfig; verifier: RoleConfig };
   projects: Record<string, ProjectConfig>;
   confirmFromVersion: number;
   maxConsecutiveBlocks: number;
@@ -43,7 +46,12 @@ export function configFilePath(): string {
   return process.env.AISM_CONFIG ?? path.join(AISM_ROOT, "aism.config.json");
 }
 
-const REQUIRED_KEYS: (keyof AismConfig)[] = [
+const isObj = (v: unknown): v is Record<string, unknown> =>
+  typeof v === "object" && v !== null && !Array.isArray(v);
+
+const isStrArr = (v: unknown): v is string[] => Array.isArray(v) && v.every((x) => typeof x === "string");
+
+const TOP_KEYS = [
   "port",
   "endpoints",
   "roles",
@@ -52,7 +60,12 @@ const REQUIRED_KEYS: (keyof AismConfig)[] = [
   "maxConsecutiveBlocks",
   "parkLimitSec",
   "hookTimeoutSec",
-];
+] as const;
+
+const NUM_KEYS = ["port", "confirmFromVersion", "maxConsecutiveBlocks", "parkLimitSec", "hookTimeoutSec"] as const;
+const ROLE_NAMES = ["planner", "verifier"] as const;
+const PROJECT_KEYS = ["root", "plansDir", "protectedPaths", "roleOverlay"] as const;
+const ROLE_CFG_KEYS = ["endpoint", "prompt", "permissionMode"] as const;
 
 export function loadConfig(configPath: string): AismConfig {
   let raw: string;
@@ -69,30 +82,131 @@ export function loadConfig(configPath: string): AismConfig {
     throw new Error(`설정 JSON 파싱 실패: ${configPath} (${(e as Error).message})`);
   }
 
-  const cfg = data as AismConfig;
+  const problems: string[] = [];
+  if (!isObj(data)) {
+    problems.push("최상위: 객체여야 함");
+  } else {
+    // 닫힌 객체 — 최상위.
+    for (const k of Object.keys(data)) {
+      if (!(TOP_KEYS as readonly string[]).includes(k)) problems.push(`${k}: 정의되지 않은 키`);
+    }
+    for (const k of TOP_KEYS) {
+      if (!(k in data)) problems.push(`${k}: 없음`);
+    }
+    // 타입 — 최상위 숫자 필드.
+    for (const k of NUM_KEYS) {
+      if (k in data && typeof data[k] !== "number") problems.push(`${k}: number여야 함`);
+    }
 
-  for (const key of REQUIRED_KEYS) {
-    if (!(key in cfg)) {
-      throw new Error(`설정 필수 키 누락: ${String(key)} (${configPath})`);
+    // endpoints — 객체, 각 값은 객체, 그 안의 각 값은 string.
+    const endpoints = data.endpoints;
+    if ("endpoints" in data) {
+      if (!isObj(endpoints)) {
+        problems.push("endpoints: 객체여야 함");
+      } else {
+        for (const [epName, vars] of Object.entries(endpoints)) {
+          if (!isObj(vars)) {
+            problems.push(`endpoints.${epName}: 객체여야 함`);
+          } else {
+            for (const [varName, val] of Object.entries(vars)) {
+              if (typeof val !== "string") problems.push(`endpoints.${epName}.${varName}: string이어야 함`);
+            }
+          }
+        }
+      }
+    }
+
+    // projects — 객체, 각 값은 프로젝트 객체.
+    const projects = data.projects;
+    if ("projects" in data) {
+      if (!isObj(projects)) {
+        problems.push("projects: 객체여야 함");
+      } else {
+        for (const [projName, proj] of Object.entries(projects)) {
+          const p = `projects.${projName}`;
+          if (!isObj(proj)) {
+            problems.push(`${p}: 객체여야 함`);
+            continue;
+          }
+          for (const k of Object.keys(proj)) {
+            if (!(PROJECT_KEYS as readonly string[]).includes(k)) problems.push(`${p}.${k}: 정의되지 않은 키`);
+          }
+          for (const k of ["root", "plansDir", "protectedPaths"]) {
+            if (!(k in proj)) problems.push(`${p}.${k}: 없음`);
+          }
+          if ("root" in proj && typeof proj.root !== "string") problems.push(`${p}.root: string이어야 함`);
+          if ("plansDir" in proj && typeof proj.plansDir !== "string") problems.push(`${p}.plansDir: string이어야 함`);
+          if ("roleOverlay" in proj && typeof proj.roleOverlay !== "string")
+            problems.push(`${p}.roleOverlay: string이어야 함`);
+          if ("protectedPaths" in proj && !isStrArr(proj.protectedPaths))
+            problems.push(`${p}.protectedPaths: string 배열이어야 함`);
+        }
+      }
+    }
+
+    // roles — 객체, planner·verifier.
+    const roles = data.roles;
+    if ("roles" in data) {
+      if (!isObj(roles)) {
+        problems.push("roles: 객체여야 함");
+      } else {
+        for (const k of Object.keys(roles)) {
+          if (!(ROLE_NAMES as readonly string[]).includes(k)) problems.push(`roles.${k}: 정의되지 않은 키`);
+        }
+        for (const role of ROLE_NAMES) {
+          const rc = roles[role];
+          const p = `roles.${role}`;
+          if (!(role in roles)) {
+            problems.push(`${p}: 없음`);
+            continue;
+          }
+          if (!isObj(rc)) {
+            problems.push(`${p}: 객체여야 함`);
+            continue;
+          }
+          for (const k of Object.keys(rc)) {
+            if (!(ROLE_CFG_KEYS as readonly string[]).includes(k)) problems.push(`${p}.${k}: 정의되지 않은 키`);
+          }
+          if (!("endpoint" in rc)) problems.push(`${p}.endpoint: 없음`);
+          if (!("prompt" in rc)) problems.push(`${p}.prompt: 없음`);
+          if ("endpoint" in rc && typeof rc.endpoint !== "string") problems.push(`${p}.endpoint: string이어야 함`);
+          if ("prompt" in rc && !isStrArr(rc.prompt)) problems.push(`${p}.prompt: string 배열이어야 함`);
+          if (
+            "permissionMode" in rc &&
+            !(PERMISSION_MODES as readonly string[]).includes(rc.permissionMode as string)
+          ) {
+            problems.push(`${p}.permissionMode: 허용 값 아님 (${PERMISSION_MODES.join(", ")})`);
+          }
+          // 교차 검사 — 타입이 맞을 때만 (같은 원인의 중복 메시지를 피한다).
+          if (typeof rc.endpoint === "string" && isObj(endpoints) && !(rc.endpoint in endpoints)) {
+            problems.push(`${p}.endpoint: endpoints에 없음 (${rc.endpoint})`);
+          }
+          if (isStrArr(rc.prompt)) {
+            rc.prompt.forEach((f, i) => {
+              if (!fs.existsSync(path.join(AISM_ROOT, f))) problems.push(`${p}.prompt[${i}]: 파일 없음 ${f}`);
+            });
+          }
+        }
+      }
+    }
+
+    // parkLimitSec < hookTimeoutSec.
+    const park = data.parkLimitSec;
+    const hook = data.hookTimeoutSec;
+    if (typeof park === "number" && typeof hook === "number") {
+      if (park >= hook) problems.push("parkLimitSec: hookTimeoutSec보다 작아야 함");
     }
   }
 
-  if (!cfg.roles || !cfg.roles.plan || !cfg.roles.verify) {
-    throw new Error(`설정 roles에 plan·verify가 모두 필요함 (${configPath})`);
-  }
-
-  for (const role of ["plan", "verify"] as const) {
-    const ep = cfg.roles[role].endpoint;
-    if (!ep || !(ep in cfg.endpoints)) {
-      throw new Error(`roles.${role}.endpoint "${ep ?? ""}"이 endpoints에 없음 (${configPath})`);
-    }
-  }
-
-  if (cfg.parkLimitSec >= cfg.hookTimeoutSec) {
+  if (problems.length > 0) {
     throw new Error(
-      `parkLimitSec(${cfg.parkLimitSec}) < hookTimeoutSec(${cfg.hookTimeoutSec})이어야 함 (${configPath})`
+      [
+        `설정 파일이 현재 형식과 다릅니다: ${configPath}`,
+        ...problems.map((p) => "  - " + p),
+        "aism.config.example.json을 참고하세요.",
+      ].join("\n"),
     );
   }
 
-  return cfg;
+  return data as AismConfig;
 }

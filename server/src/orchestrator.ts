@@ -22,6 +22,14 @@ export type PendingAction =
   | { kind: "todo" }
   | { kind: "describe" };
 
+export type Display = "working" | "waiting" | "your-turn" | "idle" | "disconnected";
+
+// pendingAction의 대상 역할 — decision·gate·pass·describe·todo는 PLANNER, deliver는 해당 역할.
+function targetOf(pa: PendingAction | null): Role | null {
+  if (!pa) return null;
+  return pa.kind === "deliver" ? pa.role : "planner";
+}
+
 export interface OrchestratorDeps {
   config: AismConfig;
   store: Store;
@@ -85,7 +93,7 @@ export class Orchestrator {
     // 배정 게이트 (W4) — 현재 작업에 배정된 세션이 아니면 즉시 allow (undelivered·session_id·평가 모두 생략).
     const task = this.store.state.activeTask;
     const role =
-      task && (task.assigned.plan === sessionKey ? "plan" : task.assigned.verify === sessionKey ? "verify" : null);
+      task && (task.assigned.planner === sessionKey ? "planner" : task.assigned.verifier === sessionKey ? "verifier" : null);
     if (!role) {
       reply({ action: "allow" });
       return;
@@ -100,7 +108,7 @@ export class Orchestrator {
 
     // W1 — 바인딩한 Stop에서 바로 평가: 새 plan-v1이 정확히 1개면 bind 후 그 자리에서 평가.
     let newPlanFolders: string[] = [];
-    if (role === "plan" && task.folder === null) {
+    if (role === "planner" && task.folder === null) {
       const found = this.findNewPlanV1(this.plansDir(task.project), task.startedAt);
       if (found.length === 1) {
         this.bindTask(found[0], sessionKey);
@@ -123,9 +131,9 @@ export class Orchestrator {
   }
 
   // 현재 작업에 배정된 역할별 세션 뷰 (W4).
-  private peersOf(task: ActiveTask): { plan?: PeerView; verify?: PeerView } {
-    const result: { plan?: PeerView; verify?: PeerView } = {};
-    for (const role of ["plan", "verify"] as const) {
+  private peersOf(task: ActiveTask): { planner?: PeerView; verifier?: PeerView } {
+    const result: { planner?: PeerView; verifier?: PeerView } = {};
+    for (const role of ["planner", "verifier"] as const) {
       const key = task.assigned[role];
       if (key) result[role] = { sessionKey: key, state: this.sessions.stateOf(key) ?? "detached" };
     }
@@ -186,7 +194,7 @@ export class Orchestrator {
       aismRoot: this.aismRoot,
       store: this.store,
     });
-    this.sessions.register(result.sessionKey, role === "plan" && task.folder === null ? "unbound" : "launching");
+    this.sessions.register(result.sessionKey, role === "planner" && task.folder === null ? "unbound" : "working");
     this.assign(task, role, result.sessionKey);
     this.store.appendEvent({ type: "launch", role, sessionKey: result.sessionKey });
   }
@@ -227,6 +235,19 @@ export class Orchestrator {
     this.hub.broadcast("state", this.getState());
   }
 
+  // 표시 상태 계산 (plan-v3 §3 B 규칙 1~6).
+  private displayOf(role: Role, task: ActiveTask | null, pa: PendingAction | null): Display | null {
+    if (!task) return null;
+    const key = task.assigned[role];
+    if (!key) return null; // 배정 없음
+    const st = this.sessions.stateOf(key) ?? "detached"; // 모르면 detached
+    if (st === "detached") return "disconnected";
+    if (st === "working") return "working";
+    if (st === "parked") return "waiting";
+    if (st === "unbound") return "your-turn";
+    return targetOf(pa) === role ? "your-turn" : "idle"; // idle
+  }
+
   // GET /api/state.
   getState() {
     const task = this.store.state.activeTask;
@@ -234,17 +255,23 @@ export class Orchestrator {
     for (const [key, info] of Object.entries(this.store.state.sessions)) {
       sessions[key] = { role: info.role, state: this.sessions.stateOf(key) ?? "detached" };
     }
+    const pa = this.pendingAction();
     const assignedState = {
-      plan: task?.assigned.plan ? (this.sessions.stateOf(task.assigned.plan) ?? "detached") : null,
-      verify: task?.assigned.verify ? (this.sessions.stateOf(task.assigned.verify) ?? "detached") : null,
+      planner: task?.assigned.planner ? (this.sessions.stateOf(task.assigned.planner) ?? "detached") : null,
+      verifier: task?.assigned.verifier ? (this.sessions.stateOf(task.assigned.verifier) ?? "detached") : null,
+    };
+    const assignedDisplay = {
+      planner: this.displayOf("planner", task, pa),
+      verifier: this.displayOf("verifier", task, pa),
     };
     return {
       activeTask: task,
       assignedState,
+      assignedDisplay,
       snapshot: task && task.folder !== null ? this.taskSnapshot(task.project, task.folder) : null,
       sessions,
       projects: Object.keys(this.config.projects),
-      pendingAction: this.pendingAction(),
+      pendingAction: pa,
       events: this.store.readEvents().slice(-50),
     };
   }
@@ -286,14 +313,14 @@ export class Orchestrator {
     const result = this.launch({
       config: this.config,
       project,
-      role: "plan",
+      role: "planner",
       folder: null,
       aismRoot: this.aismRoot,
       store: this.store,
     });
     this.sessions.register(result.sessionKey, "unbound");
-    this.assign(task, "plan", result.sessionKey);
-    this.store.appendEvent({ type: "launch", role: "plan", sessionKey: result.sessionKey });
+    this.assign(task, "planner", result.sessionKey);
+    this.store.appendEvent({ type: "launch", role: "planner", sessionKey: result.sessionKey });
     this.store.save();
     this.broadcastState();
     return { ok: true, status: 200 };
@@ -303,14 +330,14 @@ export class Orchestrator {
   relaunch(role: Role): { ok: boolean; status: number; error?: string } {
     const task = this.store.state.activeTask;
     if (!task) return { ok: false, status: 409, error: "no active task" };
-    if (role === "verify" && task.folder === null) return { ok: false, status: 409, error: "folder is null" };
+    if (role === "verifier" && task.folder === null) return { ok: false, status: 409, error: "folder is null" };
     const assignedKey = task.assigned[role];
     const st = assignedKey ? (this.sessions.stateOf(assignedKey) ?? "detached") : null;
     const allowed =
       st === null ||
       st === "detached" ||
       st === "idle" ||
-      (role === "plan" && task.folder === null && st === "unbound");
+      (role === "planner" && task.folder === null && st === "unbound");
     if (!allowed) return { ok: false, status: 409, error: `session is ${st}` };
     const result = this.launch({
       config: this.config,
@@ -320,7 +347,7 @@ export class Orchestrator {
       aismRoot: this.aismRoot,
       store: this.store,
     });
-    this.sessions.register(result.sessionKey, role === "plan" && task.folder === null ? "unbound" : "launching");
+    this.sessions.register(result.sessionKey, role === "planner" && task.folder === null ? "unbound" : "working");
     this.assign(task, role, result.sessionKey);
     this.store.appendEvent({ type: "launch", role, sessionKey: result.sessionKey, relaunch: true });
     this.store.save();
@@ -332,7 +359,7 @@ export class Orchestrator {
   closeTask(): void {
     const task = this.store.state.activeTask;
     if (task) {
-      for (const key of [task.assigned.plan, task.assigned.verify]) {
+      for (const key of [task.assigned.planner, task.assigned.verifier]) {
         if (key) this.sessions.resolve(key, { action: "allow" }, "task-closed");
       }
     }

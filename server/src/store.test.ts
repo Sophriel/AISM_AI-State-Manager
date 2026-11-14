@@ -2,7 +2,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { Store, newActiveTask } from "./store.js";
 
 let dir: string;
@@ -19,8 +19,8 @@ describe("Store", () => {
   it("저장 후 새 인스턴스로 로드하면 동일", () => {
     const a = new Store(dir);
     a.state.activeTask = { ...newActiveTask("EWE", 1000), folder: "261111-alpha" };
-    a.state.sessions["plan-1"] = {
-      role: "plan",
+    a.state.sessions["planner-1"] = {
+      role: "planner",
       project: "EWE",
       folder: "261111-alpha",
       launchedAt: 1000,
@@ -28,8 +28,8 @@ describe("Store", () => {
       activeSessionId: "s1",
       switchedOnce: false,
     };
-    a.state.activeTask.record = { notified: ["decision-v3"], consecutiveBlocks: { "verify-1": 2 }, instructed: [] };
-    a.state.activeTask.undelivered = [{ role: "verify", text: "지시 문장" }];
+    a.state.activeTask.record = { notified: ["decision-v3"], consecutiveBlocks: { "verifier-1": 2 }, instructed: [] };
+    a.state.activeTask.undelivered = [{ role: "verifier", text: "지시 문장" }];
     a.save();
 
     const b = new Store(dir);
@@ -41,31 +41,79 @@ describe("Store", () => {
     expect(s.state).toEqual({ activeTask: null, sessions: {} });
   });
 
-  it("기존 형식 state.json(최상위 record/undelivered) 로드 시 activeTask에 빈 값 채우고 최상위 필드 무시", () => {
+  it("형식이 다른 state.json(최상위 record 키) → 빈 상태", () => {
+    const s = new Store(dir);
+    fs.writeFileSync(
+      path.join(dir, "state.json"),
+      JSON.stringify({ activeTask: null, sessions: {}, record: { notified: ["pass-v1"] } }),
+      "utf8",
+    );
+    expect(s.load()).toEqual({ activeTask: null, sessions: {} });
+  });
+
+  it("형식이 다른 state.json(activeTask.assigned에 plan 키) → 빈 상태", () => {
     const s = new Store(dir);
     fs.writeFileSync(
       path.join(dir, "state.json"),
       JSON.stringify({
-        activeTask: { project: "EWE", folder: "261111-alpha", startedAt: 1000 },
+        activeTask: {
+          project: "EWE",
+          folder: null,
+          startedAt: 1000,
+          assigned: { plan: "planner-1", verifier: null },
+          record: { notified: [], consecutiveBlocks: {}, instructed: [] },
+          undelivered: [],
+        },
         sessions: {},
-        record: { notified: ["pass-v1"], consecutiveBlocks: {} },
-        undelivered: [{ role: "plan", text: "지시 문장" }],
       }),
       "utf8",
     );
-    const t = s.load();
-    expect(t.activeTask?.assigned).toEqual({ plan: null, verify: null });
-    expect(t.activeTask?.record).toEqual({ notified: [], consecutiveBlocks: {}, instructed: [] });
-    expect(t.activeTask?.undelivered).toEqual([]);
-    expect("record" in t).toBe(false);
-    expect("undelivered" in t).toBe(false);
+    expect(s.load()).toEqual({ activeTask: null, sessions: {} });
+  });
+
+  it("형식이 다른 state.json(세션 role: plan) → 빈 상태", () => {
+    const s = new Store(dir);
+    fs.writeFileSync(
+      path.join(dir, "state.json"),
+      JSON.stringify({
+        activeTask: null,
+        sessions: {
+          "planner-1": {
+            role: "plan",
+            project: "EWE",
+            folder: null,
+            launchedAt: 1000,
+            sessionIds: [],
+            activeSessionId: null,
+            switchedOnce: false,
+          },
+        },
+      }),
+      "utf8",
+    );
+    expect(s.load()).toEqual({ activeTask: null, sessions: {} });
+  });
+
+  it("형식이 다른 state.json(activeTask 필드 누락) → 빈 상태", () => {
+    const s = new Store(dir);
+    fs.writeFileSync(path.join(dir, "state.json"), JSON.stringify({ sessions: {} }), "utf8");
+    expect(s.load()).toEqual({ activeTask: null, sessions: {} });
+  });
+
+  it("형식 불일치 경고는 1회만 (생성자 + load 연속)", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    fs.writeFileSync(path.join(dir, "state.json"), JSON.stringify({ sessions: {} }), "utf8");
+    const s = new Store(dir); // 생성자 readState → 1회 경고
+    s.load(); // 같은 인스턴스 — formatWarned이므로 경고 없음
+    expect(warn).toHaveBeenCalledTimes(1);
+    warn.mockRestore();
   });
 
   it("이벤트 3개 append 후 줄 수 3", () => {
     const s = new Store(dir);
-    s.appendEvent({ type: "stop", sessionKey: "plan-1" });
-    s.appendEvent({ type: "reply", sessionKey: "plan-1", action: "allow" });
-    s.appendEvent({ type: "launch", role: "verify" });
+    s.appendEvent({ type: "stop", sessionKey: "planner-1" });
+    s.appendEvent({ type: "reply", sessionKey: "planner-1", action: "allow" });
+    s.appendEvent({ type: "launch", role: "verifier" });
 
     const raw = fs.readFileSync(path.join(dir, "events.jsonl"), "utf8");
     const lines = raw.split(/\r?\n/).filter((l) => l.trim() !== "");
@@ -74,7 +122,7 @@ describe("Store", () => {
     const events = s.readEvents();
     expect(events).toHaveLength(3);
     expect(events[0].type).toBe("stop");
-    expect(events[0].sessionKey).toBe("plan-1");
+    expect(events[0].sessionKey).toBe("planner-1");
     expect(typeof events[0].ts).toBe("number");
     expect(events[2].type).toBe("launch");
   });

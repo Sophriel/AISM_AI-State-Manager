@@ -1,4 +1,4 @@
-// T9 완료 조건 — spawn 주입, 생성된 4개 파일 내용(공백 경로 따옴표, cloud 관리 변수 비움, verify local 변수 설정)과 spawn 인자 검증.
+// T9 완료 조건 — spawn 주입, 생성된 4개 파일 내용(공백 경로 따옴표, cloud 관리 변수 비움, verifier local 변수 설정)과 spawn 인자 검증.
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -21,8 +21,8 @@ beforeEach(() => {
   storeDir = fs.mkdtempSync(path.join(os.tmpdir(), "aism-launch-store-"));
 
   fs.mkdirSync(path.join(aismRoot, "roles"), { recursive: true });
-  fs.writeFileSync(path.join(aismRoot, "roles", "plan.md"), "PLAN PROMPT CONTENT");
-  fs.writeFileSync(path.join(aismRoot, "roles", "verify.md"), "VERIFY PROMPT CONTENT");
+  fs.writeFileSync(path.join(aismRoot, "roles", "planner.md"), "PLANNER PROMPT CONTENT");
+  fs.writeFileSync(path.join(aismRoot, "roles", "verifier.md"), "VERIFIER PROMPT CONTENT");
   fs.writeFileSync(path.join(projectRoot, "overlay.md"), "OVERLAY CONTENT");
 });
 
@@ -45,8 +45,8 @@ function makeConfig(): AismConfig {
       },
     },
     roles: {
-      plan: { endpoint: "cloud", prompt: ["roles/plan.md"] },
-      verify: { endpoint: "local", prompt: ["roles/verify.md"] },
+      planner: { endpoint: "cloud", prompt: ["roles/planner.md"], permissionMode: "auto" },
+      verifier: { endpoint: "local", prompt: ["roles/verifier.md"] },
     },
     projects: {
       EWE: {
@@ -66,7 +66,7 @@ function makeConfig(): AismConfig {
 const NOW = new Date(2026, 10, 11, 23, 30, 45); // 2026-11-11 23:30:45
 
 describe("launchSession", () => {
-  it("PLAN(cloud) — 4개 파일 내용 + spawn 인자", () => {
+  it("PLANNER(cloud) — 4개 파일 내용 + spawn 인자", () => {
     const config = makeConfig();
     let spawnCall: { cmd: string; args: string[]; opts: { detached: boolean; stdio: "ignore" } } | null = null;
     const spawn: SpawnFn = (cmd, args, opts) => (spawnCall = { cmd, args, opts });
@@ -74,7 +74,7 @@ describe("launchSession", () => {
     const { sessionKey, dir } = launchSession({
       config,
       project: "EWE",
-      role: "plan",
+      role: "planner",
       folder: "261111-alpha",
       aismRoot,
       spawn,
@@ -82,21 +82,21 @@ describe("launchSession", () => {
       hex: "a1b2",
     });
 
-    expect(sessionKey).toBe("plan-20261111-233045-a1b2");
+    expect(sessionKey).toBe("planner-20261111-233045-a1b2");
     expect(dir).toBe(path.join(aismRoot, "state", "sessions", sessionKey));
 
     // prompt.md — 역할 프롬프트 + overlay + 헤더.
     const prompt = fs.readFileSync(path.join(dir, "prompt.md"), "utf8");
-    expect(prompt).toContain("PLAN PROMPT CONTENT");
+    expect(prompt).toContain("PLANNER PROMPT CONTENT");
     expect(prompt).toContain("OVERLAY CONTENT");
     expect(prompt).toContain("## AISM context");
     expect(prompt).toContain(`Project root: ${toSlash(projectRoot)}`);
     expect(prompt).toContain(`Plans root: ${toSlash(path.join(projectRoot, ".claude/plans"))}`);
     expect(prompt).toContain("Task folder: 261111-alpha");
 
-    // settings.json — Stop 훅(경로 /) + acceptEdits.
+    // settings.json — Stop 훅만(경로 /), permissions 없음 (T5: 권한 모드는 args --permission-mode).
     const settings = JSON.parse(fs.readFileSync(path.join(dir, "settings.json"), "utf8"));
-    expect(settings.permissions.defaultMode).toBe("acceptEdits");
+    expect("permissions" in settings).toBe(false);
     expect(settings.hooks.Stop[0].hooks[0]).toEqual({
       type: "command",
       command: "node",
@@ -114,14 +114,16 @@ describe("launchSession", () => {
     expect(envBat).toContain(`set "AISM_SESSION_KEY=${sessionKey}"`);
     expect(envBat).toContain(`cd /d "${projectRoot}"`); // 공백 경로 따옴표
 
-    // args.txt — 한 줄, 백슬래시 경로, disallowedTools, name, 초기 프롬프트.
+    // args.txt — 한 줄, 백슬래시 경로, permission-mode, disallowedTools(Edit만), name, 초기 프롬프트.
     const argsTxt = fs.readFileSync(path.join(dir, "args.txt"), "utf8");
     expect(argsTxt.trimEnd()).toBe(
       `--append-system-prompt-file "${toWin(path.join(dir, "prompt.md"))}" ` +
         `--settings "${toWin(path.join(dir, "settings.json"))}" ` +
-        `--disallowedTools "Edit(${config.projects.EWE.protectedPaths[0]})" "Write(${config.projects.EWE.protectedPaths[0]})" ` +
-        `--name "AISM PLAN 261111-alpha" "AISM task: 261111-alpha"`,
+        `--permission-mode auto ` +
+        `--disallowedTools "Edit(${config.projects.EWE.protectedPaths[0]})" ` +
+        `--name "AISM PLANNER 261111-alpha" "AISM task: 261111-alpha"`,
     );
+    expect(argsTxt).not.toContain("Write(");
 
     // spawn 인자.
     expect(spawnCall?.cmd).toBe("wt.exe");
@@ -129,7 +131,7 @@ describe("launchSession", () => {
       "-w",
       "new",
       "--title",
-      "AISM · 261111-alpha · PLAN",
+      "AISM · 261111-alpha · PLANNER",
       "cmd",
       "/k",
       path.join(aismRoot, "scripts", "launch_session.bat"),
@@ -138,12 +140,12 @@ describe("launchSession", () => {
     expect(spawnCall?.opts).toEqual({ detached: true, stdio: "ignore" });
   });
 
-  it("VERIFY(local) — env.bat에 local 변수 설정", () => {
+  it("VERIFIER(local) — env.bat에 local 변수 설정", () => {
     const config = makeConfig();
     const { dir } = launchSession({
       config,
       project: "EWE",
-      role: "verify",
+      role: "verifier",
       folder: "261111-alpha",
       aismRoot,
       spawn: () => {},
@@ -158,9 +160,12 @@ describe("launchSession", () => {
     expect(envBat).toContain('set "ANTHROPIC_AUTH_TOKEN=local"');
     expect(envBat).toContain('set "ANTHROPIC_MODEL=Qwen3.8-27B-NVFP4-MTP-LOW"');
     expect(envBat).toContain('set "CLAUDE_CODE_AUTO_COMPACT_WINDOW=200000"');
-    // prompt.md는 verify 역할 프롬프트.
+    // prompt.md는 verifier 역할 프롬프트.
     const prompt = fs.readFileSync(path.join(dir, "prompt.md"), "utf8");
-    expect(prompt).toContain("VERIFY PROMPT CONTENT");
+    expect(prompt).toContain("VERIFIER PROMPT CONTENT");
+    // args.txt — permissionMode 생략 → acceptEdits (T5).
+    const argsTxt = fs.readFileSync(path.join(dir, "args.txt"), "utf8");
+    expect(argsTxt).toContain("--permission-mode acceptEdits");
   });
 
   it("새 작업(folder null) — 초기 프롬프트 없음, 헤더 '(new task — wait for the user)'", () => {
@@ -168,7 +173,7 @@ describe("launchSession", () => {
     const { dir } = launchSession({
       config,
       project: "EWE",
-      role: "plan",
+      role: "planner",
       folder: null,
       aismRoot,
       spawn: () => {},
@@ -180,7 +185,7 @@ describe("launchSession", () => {
     expect(prompt).toContain("Task folder: (new task — wait for the user)");
 
     const argsTxt = fs.readFileSync(path.join(dir, "args.txt"), "utf8");
-    expect(argsTxt).toContain('--name "AISM PLAN new"');
+    expect(argsTxt).toContain('--name "AISM PLANNER new"');
     expect(argsTxt).not.toContain("AISM task:");
   });
 
@@ -190,7 +195,7 @@ describe("launchSession", () => {
     const { sessionKey } = launchSession({
       config,
       project: "EWE",
-      role: "verify",
+      role: "verifier",
       folder: "261111-alpha",
       aismRoot,
       spawn: () => {},
@@ -201,7 +206,7 @@ describe("launchSession", () => {
 
     const info = store.state.sessions[sessionKey];
     expect(info).toEqual({
-      role: "verify",
+      role: "verifier",
       project: "EWE",
       folder: "261111-alpha",
       launchedAt: NOW.getTime(),

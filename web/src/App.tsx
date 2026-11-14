@@ -17,10 +17,10 @@ import "./App.css";
 function canRelaunch(state: State | null, role: Role): boolean {
   const task = state?.activeTask;
   if (!task) return false;
-  if (role === "verify" && task.folder === null) return false;
+  if (role === "verifier" && task.folder === null) return false;
   const s = state.assignedState[role];
   if (s === null || s === "detached" || s === "idle") return true;
-  if (role === "plan" && task.folder === null && s === "unbound") return true;
+  if (role === "planner" && task.folder === null && s === "unbound") return true;
   return false;
 }
 
@@ -139,8 +139,8 @@ function App() {
   const projects = state?.projects ?? [];
 
   const selectValue = activeTask ? activeTask.project : project;
-  const planDisabled = busy || !canRelaunch(state, "plan");
-  const verifyDisabled = busy || !canRelaunch(state, "verify");
+  const planDisabled = busy || !canRelaunch(state, "planner");
+  const verifyDisabled = busy || !canRelaunch(state, "verifier");
 
   return (
     <div className="app" onClick={requestPermission}>
@@ -151,8 +151,8 @@ function App() {
 
       <TaskCard
         state={state}
-        planState={state ? state.assignedState.plan : null}
-        verifyState={state ? state.assignedState.verify : null}
+        planDisplay={state ? state.assignedDisplay.planner : null}
+        verifyDisplay={state ? state.assignedDisplay.verifier : null}
       />
 
       <div className="controls">
@@ -173,11 +173,11 @@ function App() {
             새 작업
           </button>
         </div>
-        <button type="button" onClick={() => handleRelaunch("plan")} disabled={planDisabled}>
-          PLAN 다시 띄우기
+        <button type="button" onClick={() => handleRelaunch("planner")} disabled={planDisabled}>
+          PLANNER 다시 띄우기
         </button>
-        <button type="button" onClick={() => handleRelaunch("verify")} disabled={verifyDisabled}>
-          VERIFY 다시 띄우기
+        <button type="button" onClick={() => handleRelaunch("verifier")} disabled={verifyDisabled}>
+          VERIFIER 다시 띄우기
         </button>
         <button type="button" onClick={handleClose} disabled={busy || !activeTask}>
           작업 종료

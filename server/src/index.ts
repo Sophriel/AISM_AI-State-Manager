@@ -80,8 +80,8 @@ async function main(): Promise<void> {
   });
 
   app.post("/api/tasks/relaunch", async (request, reply) => {
-    const { role } = (request.body ?? {}) as { role?: "plan" | "verify" };
-    if (role !== "plan" && role !== "verify") return reply.code(400).send({ error: "invalid role" });
+    const { role } = (request.body ?? {}) as { role?: "planner" | "verifier" };
+    if (role !== "planner" && role !== "verifier") return reply.code(400).send({ error: "invalid role" });
     const result = orchestrator.relaunch(role);
     return reply.code(result.status).send(result.ok ? { ok: true } : { error: result.error });
   });

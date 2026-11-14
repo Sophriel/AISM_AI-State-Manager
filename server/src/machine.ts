@@ -2,11 +2,11 @@
 // 판정표 행 0~11을 그 순서대로 적용한다.
 import type { Snapshot } from "./artifacts.js";
 
-export type Role = "plan" | "verify";
+export type Role = "planner" | "verifier";
 
 export interface PeerView {
   sessionKey: string;
-  state: "launching" | "unbound" | "working" | "parked" | "idle" | "detached";
+  state: "unbound" | "working" | "parked" | "idle" | "detached";
 }
 
 export interface TaskRecord {
@@ -20,7 +20,7 @@ export interface MachineInput {
   taskActive: boolean;
   snapshot: Snapshot;
   newPlanFolders: string[];
-  peers: { plan?: PeerView; verify?: PeerView };
+  peers: { planner?: PeerView; verifier?: PeerView };
   record: TaskRecord;
   config: { confirmFromVersion: number; maxConsecutiveBlocks: number };
 }
@@ -111,7 +111,7 @@ export function evaluate(input: MachineInput): Action[] {
     } else if (peer.state === "idle") {
       actions.push({ kind: "undeliverable", role, text }); // notify는 내지 않는다 — T12가 처리.
     }
-    // launching / working / unbound → 아무 Action 없음.
+    // working / unbound → 아무 Action 없음.
     return "none";
   };
 
@@ -135,8 +135,8 @@ export function evaluate(input: MachineInput): Action[] {
     return finish();
   }
 
-  // 행 1 — PLAN (unbound). 바인딩은 handleStop에서 바로 수행하므로(W1) 여기서는 0개/≥2개만 남음.
-  if (sender.role === "plan" && !sender.bound) {
+  // 행 1 — PLANNER (unbound). 바인딩은 handleStop에서 바로 수행하므로(W1) 여기서는 0개/≥2개만 남음.
+  if (sender.role === "planner" && !sender.bound) {
     if (newPlanFolders.length === 0) {
       allow(sender.sessionKey);
     } else {
@@ -146,7 +146,7 @@ export function evaluate(input: MachineInput): Action[] {
     return finish();
   }
 
-  if (sender.role === "plan") {
+  if (sender.role === "planner") {
     // 행 2 — NEEDS_DECISION.
     if (snapshot.status === "NEEDS_DECISION") {
       allow(sender.sessionKey);
@@ -156,10 +156,10 @@ export function evaluate(input: MachineInput): Action[] {
     // 행 3 — IN_REVIEW, verify-vN 없음.
     if (snapshot.status === "IN_REVIEW" && !snapshot.verifyExists) {
       actions.push({ kind: "hold", sessionKey: sender.sessionKey });
-      deliver("verify", instructionVerifyPlan(N ?? 0));
+      deliver("verifier", instructionVerifyPlan(N ?? 0));
       return finish();
     }
-    // 행 4p — IN_REVIEW + PASS (W5): PLAN에 APPROVED·todo 작성을 지시.
+    // 행 4p — IN_REVIEW + PASS (W5): PLANNER에 APPROVED·todo 작성을 지시.
     if (snapshot.status === "IN_REVIEW" && snapshot.verdict === "PASS") {
       const key = `todo-v${N ?? 0}`;
       if (instructed.has(key)) {
@@ -188,7 +188,7 @@ export function evaluate(input: MachineInput): Action[] {
     }
     if (snapshot.status === "TODO_READY") {
       allow(sender.sessionKey);
-      notify(`todo-ready-v${part(N)}`, "info", "todo 작성 완료 — CODE 단계는 CODE 세션에서 진행하세요");
+      notify(`todo-ready-v${part(N)}`, "info", "todo 작성 완료 — CODER 단계는 CODER 세션에서 진행하세요");
       return finish();
     }
     if (snapshot.status === "IN_PROGRESS" || snapshot.status === "BLOCKED" || snapshot.status === "DONE") {
@@ -198,7 +198,7 @@ export function evaluate(input: MachineInput): Action[] {
     // status null (plan 파일 없음) → 행 11로 낙하.
   }
 
-  if (sender.role === "verify") {
+  if (sender.role === "verifier") {
     if (!snapshot.verifyExists) {
       // 행 10 — verify-vN 없음.
       allow(sender.sessionKey);
@@ -210,22 +210,22 @@ export function evaluate(input: MachineInput): Action[] {
       if ((N ?? 0) < config.confirmFromVersion) {
         // 행 6 — REVISE, N < confirmFromVersion.
         actions.push({ kind: "hold", sessionKey: sender.sessionKey });
-        deliver("plan", instructionPlanRevise(N ?? 0));
+        deliver("planner", instructionPlanRevise(N ?? 0));
       } else {
         // 행 7 — REVISE, N ≥ confirmFromVersion (v5 게이트, D2).
         actions.push({ kind: "hold", sessionKey: sender.sessionKey });
-        notify(`gate-v${part(N)}`, "warn", `plan-v${part(N)} REVISE — 계속 개정하려면 PLAN 창에서 지시하세요`);
+        notify(`gate-v${part(N)}`, "warn", `plan-v${part(N)} REVISE — 계속 개정하려면 PLANNER 창에서 지시하세요`);
       }
       return finish();
     }
 
     if (snapshot.verdict === "PASS") {
-      // 행 8 — PASS (W5): PLAN에 todo 작성을 지시.
+      // 행 8 — PASS (W5): PLANNER에 todo 작성을 지시.
       allow(sender.sessionKey);
-      notify(`pass-v${part(N)}`, "info", `plan-v${part(N)} PASS — PLAN에 todo 작성을 지시합니다`);
+      notify(`pass-v${part(N)}`, "info", `plan-v${part(N)} PASS — PLANNER에 todo 작성을 지시합니다`);
       const key = `todo-v${N ?? 0}`;
       if (!instructed.has(key)) {
-        if (deliver("plan", instructionApproveAndTodo(N ?? 0)) === "blocked") {
+        if (deliver("planner", instructionApproveAndTodo(N ?? 0)) === "blocked") {
           instructed.add(key);
           dirty = true;
         }

@@ -9,7 +9,7 @@ export interface ActiveTask {
   project: string;
   folder: string | null;
   startedAt: number;
-  assigned: { plan: string | null; verify: string | null };
+  assigned: { planner: string | null; verifier: string | null };
   record: TaskRecord;
   undelivered: Undelivered[];
 }
@@ -46,10 +46,87 @@ export function newActiveTask(project: string, startedAt: number): ActiveTask {
     project,
     folder: null,
     startedAt,
-    assigned: { plan: null, verify: null },
+    assigned: { planner: null, verifier: null },
     record: { notified: [], consecutiveBlocks: {}, instructed: [] },
     undelivered: [],
   };
+}
+
+const isObj = (v: unknown): v is Record<string, unknown> =>
+  typeof v === "object" && v !== null && !Array.isArray(v);
+
+const isStrArr = (v: unknown): v is string[] => Array.isArray(v) && v.every((x) => typeof x === "string");
+
+const isNumMap = (v: unknown): v is Record<string, number> =>
+  isObj(v) && Object.values(v).every((x) => typeof x === "number");
+
+// plan-v3 §3 A "현재 형식" 검사 — 키가 정확히 일치하고 타입이 맞아야 true.
+export function isCurrentState(x: unknown): x is State {
+  if (!isObj(x)) return false;
+  const topKeys = Object.keys(x);
+  if (topKeys.length !== 2 || !topKeys.includes("activeTask") || !topKeys.includes("sessions")) return false;
+
+  const t = x.activeTask;
+  if (t !== null) {
+    if (!isObj(t)) return false;
+    const tKeys = Object.keys(t);
+    const expectedT = ["project", "folder", "startedAt", "assigned", "record", "undelivered"];
+    if (tKeys.length !== expectedT.length || !expectedT.every((k) => tKeys.includes(k))) return false;
+    if (typeof t.project !== "string") return false;
+    if (t.folder !== null && typeof t.folder !== "string") return false;
+    if (typeof t.startedAt !== "number") return false;
+
+    const a = t.assigned;
+    if (!isObj(a)) return false;
+    const aKeys = Object.keys(a);
+    if (aKeys.length !== 2 || !aKeys.includes("planner") || !aKeys.includes("verifier")) return false;
+    for (const k of ["planner", "verifier"]) {
+      const v = a[k];
+      if (v !== null && typeof v !== "string") return false;
+    }
+
+    const r = t.record;
+    if (!isObj(r)) return false;
+    const rKeys = Object.keys(r);
+    if (
+      rKeys.length !== 3 ||
+      !rKeys.includes("notified") ||
+      !rKeys.includes("consecutiveBlocks") ||
+      !rKeys.includes("instructed")
+    )
+      return false;
+    if (!isStrArr(r.notified)) return false;
+    if (!isNumMap(r.consecutiveBlocks)) return false;
+    if (!isStrArr(r.instructed)) return false;
+
+    const u = t.undelivered;
+    if (!Array.isArray(u)) return false;
+    for (const item of u) {
+      if (!isObj(item)) return false;
+      const uKeys = Object.keys(item);
+      if (uKeys.length !== 2 || !uKeys.includes("role") || !uKeys.includes("text")) return false;
+      if (item.role !== "planner" && item.role !== "verifier") return false;
+      if (typeof item.text !== "string") return false;
+    }
+  }
+
+  const s = x.sessions;
+  if (!isObj(s)) return false;
+  for (const info of Object.values(s)) {
+    if (!isObj(info)) return false;
+    const sKeys = Object.keys(info);
+    const expectedS = ["role", "project", "folder", "launchedAt", "sessionIds", "activeSessionId", "switchedOnce"];
+    if (sKeys.length !== expectedS.length || !expectedS.every((k) => sKeys.includes(k))) return false;
+    if (info.role !== "planner" && info.role !== "verifier") return false;
+    if (typeof info.project !== "string") return false;
+    if (info.folder !== null && typeof info.folder !== "string") return false;
+    if (typeof info.launchedAt !== "number") return false;
+    if (!isStrArr(info.sessionIds)) return false;
+    if (info.activeSessionId !== null && typeof info.activeSessionId !== "string") return false;
+    if (typeof info.switchedOnce !== "boolean") return false;
+  }
+
+  return true;
 }
 
 export class Store {
@@ -57,6 +134,7 @@ export class Store {
   private statePath: string;
   private eventsPath: string;
   state: State;
+  private formatWarned = false;
 
   constructor(dir?: string) {
     this.dir = dir ?? path.join(AISM_ROOT, "state");
@@ -66,31 +144,26 @@ export class Store {
   }
 
   private readState(): State {
+    let raw: string;
     try {
-      const raw = fs.readFileSync(this.statePath, "utf8");
-      const p = JSON.parse(raw) as Partial<State>;
-      // 기존 형식 호환: activeTask에 assigned/record/undelivered가 없으면 빈 값으로 채운다.
-      // 최상위 record/undelivered는 읽지 않고 버린다 (plan-v8 W6).
-      const t = p.activeTask;
-      const r = t?.record;
-      return {
-        activeTask: t
-          ? {
-              ...t,
-              assigned: t.assigned ?? { plan: null, verify: null },
-              record: {
-                notified: r?.notified ?? [],
-                consecutiveBlocks: r?.consecutiveBlocks ?? {},
-                instructed: r?.instructed ?? [],
-              },
-              undelivered: t.undelivered ?? [],
-            }
-          : null,
-        sessions: p.sessions ?? {},
-      };
+      raw = fs.readFileSync(this.statePath, "utf8");
     } catch {
+      return emptyState(); // 파일 없음 — 경고 없음.
+    }
+    let p: unknown;
+    try {
+      p = JSON.parse(raw);
+    } catch {
+      return emptyState(); // 파싱 실패 — 경고 없음.
+    }
+    if (!isCurrentState(p)) {
+      if (!this.formatWarned) {
+        console.warn("state.json이 현재 형식과 맞지 않아 무시했습니다 — 빈 상태로 시작합니다");
+        this.formatWarned = true;
+      }
       return emptyState();
     }
+    return p;
   }
 
   // 디스크에서 state.json을 다시 읽어 메모리 상태를 갱신한다.

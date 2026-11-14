@@ -5,18 +5,32 @@ function str(v: unknown): string {
   return v == null ? "" : String(v);
 }
 
-// 역할 표시 — e.role이 있으면 대문자, 없으면 sessionKey 접두사(plan-/verify-)로, 둘 다 아니면 ?.
+// 역할 표시 — e.role이 planner/verifier면 해당 표시, 그 밖의 문자열은 대문자, 없으면 sessionKey 접두사(planner-/verifier-)로, 둘 다 아니면 ?.
 function roleOf(e: AismEvent): string {
   const role = e.role;
+  if (role === "planner") return "PLANNER";
+  if (role === "verifier") return "VERIFIER";
   if (typeof role === "string") return role.toUpperCase();
   const key = str(e.sessionKey);
-  if (key.startsWith("plan-")) return "PLAN";
-  if (key.startsWith("verify-")) return "VERIFY";
+  if (key.startsWith("planner-")) return "PLANNER";
+  if (key.startsWith("verifier-")) return "VERIFIER";
   return "?";
 }
 
+// [yy.MM.DD] HH:mm:ss — 24시간, yy = getFullYear() % 100, 모두 padStart(2, "0").
+function formatTs(ts: number): string {
+  const d = new Date(ts);
+  const yy = String(d.getFullYear() % 100).padStart(2, "0");
+  const MM = String(d.getMonth() + 1).padStart(2, "0");
+  const DD = String(d.getDate()).padStart(2, "0");
+  const HH = String(d.getHours()).padStart(2, "0");
+  const mm = String(d.getMinutes()).padStart(2, "0");
+  const ss = String(d.getSeconds()).padStart(2, "0");
+  return `[${yy}.${MM}.${DD}] ${HH}:${mm}:${ss}`;
+}
+
 function describeEvent(e: AismEvent): string {
-  const t = new Date(e.ts).toLocaleTimeString();
+  const t = formatTs(e.ts);
   switch (e.type) {
     case "stop": {
       const message = str(e.message);
@@ -28,8 +42,10 @@ function describeEvent(e: AismEvent): string {
     }
     case "hold":
       return `${t}  ${roleOf(e)} 대기`;
-    case "launch":
-      return `${t}  Launch  ${str(e.role)}`;
+    case "launch": {
+      const suffix = e.relaunch ? " (다시 띄움)" : "";
+      return `${t}  Launch  ${roleOf(e)}${suffix}`;
+    }
     case "bind":
       return `${t}  Bind  ${str(e.folder)}`;
     case "notify":
