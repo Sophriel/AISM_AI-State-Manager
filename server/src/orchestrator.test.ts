@@ -136,6 +136,97 @@ describe("undeliverable (C2-1)", () => {
 
     env.cleanup();
   });
+
+  it("PLANNER detached일 때 VERIFIER Stop(REVISE) → 새 세션 없음·배정 유지·undelivered·notify → PLANNER Stop 시 삭제", () => {
+    const env = setup();
+    const { orchestrator, store, sessions, taskDir, folder } = env;
+
+    // 첫 테스트와 같은 준비 — 단 PLANNER는 detached.
+    store.state.activeTask = {
+      ...newActiveTask("EWE", Date.now()),
+      folder,
+      assigned: { planner: "planner-1", verifier: "verifier-1" },
+    };
+    store.state.sessions["planner-1"] = {
+      role: "planner",
+      project: "EWE",
+      folder,
+      launchedAt: 0,
+      sessionIds: ["p1"],
+      activeSessionId: "p1",
+      switchedOnce: false,
+    };
+    store.state.sessions["verifier-1"] = {
+      role: "verifier",
+      project: "EWE",
+      folder,
+      launchedAt: 0,
+      sessionIds: ["v1"],
+      activeSessionId: "v1",
+      switchedOnce: false,
+    };
+    sessions.register("planner-1", "detached");
+    sessions.register("verifier-1", "working");
+    fs.mkdirSync(taskDir, { recursive: true });
+    fs.writeFileSync(path.join(taskDir, "plan-v1.md"), "Status: IN_REVIEW\n");
+    fs.writeFileSync(path.join(taskDir, "plan-v1-verify.md"), "# verify\n\n판정: REVISE\n");
+
+    // VERIFIER Stop → 행 6 → PLANNER(detached)에 undeliverable — 새 세션 없음.
+    let replyV: Reply | null = null;
+    orchestrator.handleStop("verifier-1", { session_id:"v1" }, (r) => (replyV = r), () => {});
+    expect(env.launchCalls.length).toBe(0);
+    expect(store.state.activeTask?.assigned.planner).toBe("planner-1");
+    expect(store.state.activeTask?.undelivered).toHaveLength(1);
+    expect(store.state.activeTask?.undelivered[0].role).toBe("planner");
+    expect(store.state.activeTask?.undelivered[0].text).toBe(instructionPlanRevise(1));
+    const notifyEvents = store.readEvents().filter((e) => e.type === "notify");
+    expect(notifyEvents).toHaveLength(1);
+    expect(notifyEvents[0].key).toBe("undeliverable-planner");
+
+    // PLANNER Stop → undelivered 삭제 + 행 4 (IN_REVIEW·verify 있음) → allow.
+    let replyP: Reply | null = null;
+    orchestrator.handleStop("planner-1", { session_id:"p1" }, (r) => (replyP = r), () => {});
+    expect(store.state.activeTask?.undelivered).toHaveLength(0);
+    expect(replyP).toEqual({ action: "allow" });
+
+    env.cleanup();
+  });
+});
+
+describe("A — Stop 처리 밖 상태 변경 브로드캐스트", () => {
+  it("close → detached 시 onChange → hub에 state 브로드캐스트 1회 (assignedDisplay.planner disconnected)", () => {
+    const env = setup();
+    const { orchestrator, store, sessions, folder } = env;
+
+    store.state.activeTask = {
+      ...newActiveTask("EWE", Date.now()),
+      folder,
+      assigned: { planner: "planner-1", verifier: null },
+    };
+    store.state.sessions["planner-1"] = {
+      role: "planner",
+      project: "EWE",
+      folder,
+      launchedAt: 0,
+      sessionIds: ["p1"],
+      activeSessionId: "p1",
+      switchedOnce: false,
+    };
+
+    let closeCb: (() => void) | null = null;
+    sessions.onStop("planner-1", "p1", () => {}, (cb) => (closeCb = cb));
+
+    const writes: string[] = [];
+    orchestrator.getHub().add({ write: (raw) => writes.push(raw), close: () => {} });
+
+    closeCb!();
+    expect(writes).toHaveLength(1);
+    expect(writes[0].startsWith("event: state\n")).toBe(true);
+    const state = JSON.parse(writes[0].split("data: ")[1]);
+    expect(state.assignedDisplay.planner).toBe("disconnected");
+
+    env.cleanup();
+  });
 });
 
 describe("시나리오 (launcher·파일 주입)", () => {

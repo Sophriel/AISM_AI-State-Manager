@@ -161,3 +161,81 @@ describe("Sessions", () => {
     expect("reason" in last).toBe(false);
   });
 });
+
+describe("A-1 — 현재 pending의 연결만 끊김 판정", () => {
+  const detaches = (store: Store) => store.readEvents().filter((e) => e.type === "detach");
+
+  it("전환(s1 → s2): 이전 요청 close는 무시, 현재 요청 close → detached + onChange 1회", () => {
+    const store = makeStore();
+    let changes = 0;
+    const sessions = new Sessions(store, 3300, { setTimer, clearTimer, onChange: () => changes++ });
+
+    const closes: (() => void)[] = [];
+    const onClose = (cb: () => void) => closes.push(cb);
+
+    sessions.onStop("planner-1", "s1", () => {}, onClose);
+    sessions.onStop("planner-1", "s2", () => {}, onClose);
+    closes[0](); // 이미 교체된(s1) 요청의 close — 무시.
+    expect(sessions.stateOf("planner-1")).toBe("parked");
+    expect(detaches(store)).toHaveLength(0);
+    expect(changes).toBe(0);
+
+    closes[1](); // 현재 pending(s2) 연결의 close.
+    expect(sessions.stateOf("planner-1")).toBe("detached");
+    expect(detaches(store)).toHaveLength(1);
+    expect(changes).toBe(1);
+  });
+
+  it("같은 session_id 두 번: 첫 요청 close는 무시, 두 번째 close → detached", () => {
+    const store = makeStore();
+    let changes = 0;
+    const sessions = new Sessions(store, 3300, { setTimer, clearTimer, onChange: () => changes++ });
+
+    const closes: (() => void)[] = [];
+    const onClose = (cb: () => void) => closes.push(cb);
+
+    sessions.onStop("planner-1", "s1", () => {}, onClose);
+    sessions.onStop("planner-1", "s1", () => {}, onClose);
+    closes[0]();
+    expect(sessions.stateOf("planner-1")).toBe("parked");
+    expect(detaches(store)).toHaveLength(0);
+
+    closes[1]();
+    expect(sessions.stateOf("planner-1")).toBe("detached");
+  });
+
+  it("resolve 뒤 늦은 close: 무시 (상태 working 유지, onChange 없음)", () => {
+    const store = makeStore();
+    let changes = 0;
+    const sessions = new Sessions(store, 3300, { setTimer, clearTimer, onChange: () => changes++ });
+
+    const closes: (() => void)[] = [];
+    const onClose = (cb: () => void) => closes.push(cb);
+
+    sessions.onStop("planner-1", "s1", () => {}, onClose);
+    sessions.resolve("planner-1", { action: "block", reason: "x" });
+    closes[0]();
+    expect(sessions.stateOf("planner-1")).toBe("working");
+    expect(detaches(store)).toHaveLength(0);
+    expect(changes).toBe(0);
+  });
+
+  it("park-timeout: idle + onChange 1회, 이후 close는 무시", () => {
+    const store = makeStore();
+    let changes = 0;
+    const sessions = new Sessions(store, 3300, { setTimer, clearTimer, onChange: () => changes++ });
+
+    const closes: (() => void)[] = [];
+    const onClose = (cb: () => void) => closes.push(cb);
+
+    sessions.onStop("planner-1", "s1", () => {}, onClose);
+    timerFn!();
+    expect(sessions.stateOf("planner-1")).toBe("idle");
+    expect(changes).toBe(1);
+
+    closes[0]();
+    expect(sessions.stateOf("planner-1")).toBe("idle");
+    expect(detaches(store)).toHaveLength(0);
+    expect(changes).toBe(1);
+  });
+});

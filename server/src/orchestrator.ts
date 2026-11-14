@@ -61,6 +61,7 @@ export class Orchestrator {
     this.findNewPlanV1 = deps.findNewPlanV1 ?? defaultFindNewPlanV1;
     this.aismRoot = deps.aismRoot ?? AISM_ROOT;
     this.sessions.onNotify = (key, level, message) => this.emitNotify(key, level, message);
+    this.sessions.onChange = () => this.broadcastState();
   }
 
   getHub(): NotifyHub {

@@ -101,14 +101,15 @@ export function evaluate(input: MachineInput): Action[] {
     return true;
   };
 
-  // 지시 전달 규칙 (R1-4, R1-5). "blocked" = peer가 parked여서 block을 냈다.
+  // 지시 전달 규칙 (R1-4, R1-5, ADR 0011). "blocked" = peer가 parked여서 block을 냈다.
+  // 배정 없음 → launch, parked → block, idle·detached → undeliverable, working·unbound → 없음.
   const deliver = (role: Role, text: string): "blocked" | "none" => {
     const peer = peers[role];
-    if (!peer || peer.state === "detached") {
+    if (!peer) {
       actions.push({ kind: "launch", role });
     } else if (peer.state === "parked") {
       return block(peer.sessionKey, text) ? "blocked" : "none";
-    } else if (peer.state === "idle") {
+    } else if (peer.state === "idle" || peer.state === "detached") {
       actions.push({ kind: "undeliverable", role, text }); // notify는 내지 않는다 — T12가 처리.
     }
     // working / unbound → 아무 Action 없음.

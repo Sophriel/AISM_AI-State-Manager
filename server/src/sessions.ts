@@ -23,6 +23,7 @@ export interface SessionsOptions {
   setTimer?: (fn: () => void, ms: number) => Timer;
   clearTimer?: (t: Timer) => void;
   onNotify?: (key: string, level: "info" | "warn", message: string) => void;
+  onChange?: () => void;
 }
 
 export class Sessions {
@@ -33,6 +34,8 @@ export class Sessions {
   private clearTimer: (t: Timer) => void;
   // Orchestrator가 설정 (session_id 전환 notify 전달).
   onNotify?: (key: string, level: "info" | "warn", message: string) => void;
+  // Orchestrator가 설정 (Stop 처리 밖 상태 변경 → state 브로드캐스트).
+  onChange?: () => void;
 
   constructor(store: Store, parkLimitSec: number, opts: SessionsOptions = {}) {
     this.store = store;
@@ -40,6 +43,7 @@ export class Sessions {
     this.setTimer = opts.setTimer ?? ((fn, ms) => setTimeout(fn, ms));
     this.clearTimer = opts.clearTimer ?? ((t) => clearTimeout(t));
     this.onNotify = opts.onNotify;
+    this.onChange = opts.onChange;
   }
 
   // 세션의 초기 상태 등록 (T9 launcher가 호출).
@@ -100,9 +104,10 @@ export class Sessions {
     const runtime = this.getOrCreate(sessionKey);
     this.releasePending(sessionKey, { action: "allow" }); // 기존 pending이 있으면 방출.
     const timer = this.setTimer(() => this.onParkTimeout(sessionKey), this.parkLimitSec * 1000);
-    runtime.pending = { reply, timer, sessionId: claudeSessionId };
+    const pending: Pending = { reply, timer, sessionId: claudeSessionId };
+    runtime.pending = pending;
     runtime.state = "parked";
-    onClose(() => this.handleClose(sessionKey));
+    onClose(() => this.handleClose(sessionKey, pending));
     return { handled: false };
   }
 
@@ -152,17 +157,17 @@ export class Sessions {
     runtime.pending = undefined;
     runtime.state = "idle";
     this.store.appendEvent({ type: "reply", sessionKey, action: "allow", reason: "park-timeout" });
+    this.onChange?.();
   }
 
-  // 파킹 중 close 이벤트 — detached, pending 제거.
-  private handleClose(sessionKey: string): void {
+  // 현재 pending의 연결이 닫혔을 때만 detached (이미 방출·교체된 요청의 close는 무시 — plan-v4 A-1).
+  private handleClose(sessionKey: string, pending: Pending): void {
     const runtime = this.runtimes.get(sessionKey);
-    if (!runtime || runtime.state !== "parked") return;
+    if (!runtime || runtime.pending !== pending) return;
+    this.clearTimer(pending.timer);
+    runtime.pending = undefined;
     runtime.state = "detached";
-    if (runtime.pending) {
-      this.clearTimer(runtime.pending.timer);
-      runtime.pending = undefined;
-    }
     this.store.appendEvent({ type: "detach", sessionKey });
+    this.onChange?.();
   }
 }

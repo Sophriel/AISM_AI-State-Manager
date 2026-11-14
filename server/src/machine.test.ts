@@ -119,6 +119,19 @@ describe("행 3 — IN_REVIEW, verify 없음 (peer 4가지)", () => {
     expect(notifies(actions)).toHaveLength(0);
   });
 
+  it("peer detached → hold + undeliverable, launch 없음 (verifier)", () => {
+    const actions = evaluate(
+      input({
+        snapshot: { latestN: 3, status: "IN_REVIEW", verifyExists: false, verdict: null },
+        peers: { verifier: { sessionKey: "verifier-1", state: "detached" } },
+      }),
+    );
+    expect(actions.some((a) => a.kind === "hold" && a.sessionKey === "planner-1")).toBe(true);
+    const u = actions.find((a) => a.kind === "undeliverable");
+    expect(u).toEqual({ kind: "undeliverable", role: "verifier", text: instructionVerifyPlan(3) });
+    expect(actions.some((a) => a.kind === "launch")).toBe(false);
+  });
+
   it("peer 없음 → hold + launch(verifier)", () => {
     const actions = evaluate(
       input({ snapshot: { latestN: 3, status: "IN_REVIEW", verifyExists: false, verdict: null } }),
@@ -235,6 +248,20 @@ describe("행 6 — VERIFIER REVISE, N < confirmFromVersion", () => {
     );
     expect(actions.some((a) => a.kind === "hold" && a.sessionKey === "verifier-1")).toBe(true);
     expect(actions).toContainEqual({ kind: "launch", role: "planner" });
+  });
+
+  it("peer detached → hold + undeliverable(planner), launch 없음", () => {
+    const actions = evaluate(
+      input({
+        sender: { sessionKey: "verifier-1", role: "verifier", bound: true },
+        snapshot: { latestN: 3, status: "IN_PROGRESS", verifyExists: true, verdict: "REVISE" },
+        peers: { planner: { sessionKey: "planner-1", state: "detached" } },
+      }),
+    );
+    expect(actions.some((a) => a.kind === "hold" && a.sessionKey === "verifier-1")).toBe(true);
+    const u = actions.find((a) => a.kind === "undeliverable");
+    expect(u).toEqual({ kind: "undeliverable", role: "planner", text: instructionPlanRevise(3) });
+    expect(actions.some((a) => a.kind === "launch")).toBe(false);
   });
 });
 

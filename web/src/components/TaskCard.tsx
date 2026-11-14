@@ -95,6 +95,11 @@ function TaskCard({ state, planDisplay, verifyDisplay }: Props) {
           )}
         </div>
       )}
+      {pa && pa.kind === "deliver" && (pa.role === "planner" ? planDisplay : verifyDisplay) === "disconnected" && (
+        <div className="pending-hint">
+          창을 닫았다면 '{pa.role === "planner" ? "PLANNER" : "VERIFIER"} 다시 띄우기'를 누르세요
+        </div>
+      )}
     </div>
   );
 }
