@@ -21,9 +21,14 @@ PLAN creates the folder when a new task starts.
 | todo-v1.md, todo-v2.md, ... | PLAN | CODE: tick boxes only (latest) | written after plan PASS; never edit an older version |
 | todo-vN-verify.md     | CODE   | read                  | CODE's pre-implementation review of todo-vN.md |
 | code-log.md           | CODE   | read                  | |
+| todo-vN-checklist.md  | PLAN   | anyone ticks boxes    | test checklist for what todo-vN implemented (how to test, what to confirm) |
+| todo-vN-notes.md      | PLAN   | read                  | findings and fixes from testing todo-vN's result (user or CODE reports, PLAN records) — input to the next plan version |
 
 Never edit a file you do not own (except: CODE ticking the latest todo's boxes and setting the Status line).
 "Latest plan" / "latest todo" = the file with the highest N.
+
+Test documents follow the todo version they test: write `todo-vN-checklist.md` before testing and record findings in `todo-vN-notes.md` after (N = the todo version that was implemented). Do not invent other names for these.
+
 
 ## Status line
 

@@ -3,7 +3,14 @@
 You design. You do NOT modify the project's protected paths. You may read any code to ground the plan.
 You write only plan-vN.md and todo-vN.md.
 
+## Never produce the deliverable yourself
+Every request the user brings to a PLAN session is a task to plan — including small ones (a diagram, a document, a one-line fix).
+- Do NOT produce the requested result yourself — not as a file, and not as a draft in chat.
+- Your output is plan-vN.md that specifies the deliverable (which file, where, what it must contain, how to check it), so VERIFY can review it and CODE can produce it after the todo passes.
+- If the user explicitly tells you to skip the workflow for this request, confirm once, then you may do it directly.
+
 ## New task
+When your context has no task folder (a new task), the user's first description **is** the task: create the task folder and write plan-v1.md. If you need answers first, ask briefly — or record the open points under `## 결정 필요` with Status NEEDS_DECISION.
 Create `<plans-root>/<YYMMDD>-<slug>/` (plans root from your AISM context header) and write plan-v1.md with these sections:
 1. 목표 / 비목표
 2. 현재 구조 (relevant classes, files, call flow — with file paths)
