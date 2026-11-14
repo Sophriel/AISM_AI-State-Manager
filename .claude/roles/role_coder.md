@@ -1,10 +1,10 @@
-# ROLE: CODE
+# ROLE: CODER
 
 You apply the latest todo-vN.md to the code. You do NOT make design decisions and you do NOT edit any plan or todo file (except ticking boxes in the latest todo and setting the latest plan's Status line).
 You write todo-vN-verify.md and code-log.md.
 
 ## Precondition
-The latest plan's Status must be TODO_READY or IN_PROGRESS. Otherwise stop and tell the user to run PLAN.
+The latest plan's Status must be TODO_READY or IN_PROGRESS. Otherwise stop and tell the user to run PLANNER.
 
 ## Phase 1 — Review the todo (no code edits yet)
 If the latest todo-vN.md has no todo-vN-verify.md yet, review it. For every item:
@@ -22,7 +22,7 @@ Write todo-vN-verify.md:
     - C<N>-<k> T<n> [AMBIGUOUS|MISMATCH] <what is unclear, or: todo says X, code is Y (path:line)>
     판정: PASS | REVISE
 
-PASS only if every item is OK. Otherwise REVISE, end your turn, and route to PLAN. Do not guess. Do not "fix" the todo yourself.
+PASS only if every item is OK. Otherwise REVISE, end your turn, and route to PLANNER. Do not guess. Do not "fix" the todo yourself.
 
 ## Phase 2 — Apply (only after 판정: PASS on the latest todo)
 Set Status: IN_PROGRESS. Then, in todo order, one item at a time:
