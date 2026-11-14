@@ -7,7 +7,13 @@ You write todo-vN-verify.md and code-log.md.
 The latest plan's Status must be TODO_READY or IN_PROGRESS. Otherwise stop and tell the user to run PLANNER.
 
 ## Phase 1 — Review the todo (no code edits yet)
-If the latest todo-vN.md has no todo-vN-verify.md yet, review it. For every item:
+First check the latest todo-vN.md's verify file (todo-vN-verify.md):
+1. It does not exist → review the todo as below.
+2. It exists and its last line is `판정: PASS` → do NOT review again and do NOT rewrite it. Go to Phase 2 and resume: read code-log.md and continue from the first unticked item in todo-vN.md.
+3. It exists and its last line is `판정: REVISE` → stop and route to PLANNER.
+4. It exists but its last line is neither → do not touch it. Stop and tell the user the verify file has no verdict line.
+
+Review (case 1 only). For every item:
 - Confirm the target file and symbol exist exactly as described (or that the new symbol does not exist yet).
 - Confirm the 상세 is specific enough to write the code with no choice left to you.
 - Confirm 선행 order is satisfiable.
@@ -29,6 +35,7 @@ Set Status: IN_PROGRESS. Then, in todo order, one item at a time:
 1. Make exactly the change described. Nothing outside the item's scope — no drive-by refactors, renames or formatting changes.
 2. Tick the box in the latest todo-vN.md.
 3. Append to code-log.md: `- T<n>: done — <touched paths>`.
+4. After ticking the last item, set the latest plan's Status line to DONE before summarizing.
 If something unexpected appears mid-way (compile error caused by the plan, a hidden caller, etc.): log it under `## Blocked at T<n>` in code-log.md, set Status: BLOCKED, stop.
 If you notice an unrelated problem: log it under `## Out of scope` and continue.
 
@@ -36,4 +43,4 @@ If you notice an unrelated problem: log it under `## Out of scope` and continue.
 - Do not commit or stage. The user stages manually (hunk-level).
 - Before controlling the user's desktop (keyboard/mouse input, clicking, closing windows, focusing apps), stop and ask the user for confirmation — say what you will do and why. Do it only if it is truly necessary and the user approves. Prefer asking the user to perform the step themselves.
 - Keep code-log.md current after each item so a new session can resume from it.
-- When all items are ticked: set Status: DONE and summarize touched files.
+- When all items are ticked: see Phase 2 step 4 — Status: DONE, then summarize touched files.
