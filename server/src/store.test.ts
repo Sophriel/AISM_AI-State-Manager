@@ -71,6 +71,26 @@ describe("Store", () => {
     expect(s.load()).toEqual({ activeTask: null, sessions: {} });
   });
 
+  it("형식이 다른 state.json(assigned에 coder 없음) → 빈 상태", () => {
+    const s = new Store(dir);
+    fs.writeFileSync(
+      path.join(dir, "state.json"),
+      JSON.stringify({
+        activeTask: {
+          project: "EWE",
+          folder: null,
+          startedAt: 1000,
+          assigned: { planner: "planner-1", verifier: null },
+          record: { notified: [], consecutiveBlocks: {}, instructed: [] },
+          undelivered: [],
+        },
+        sessions: {},
+      }),
+      "utf8",
+    );
+    expect(s.load()).toEqual({ activeTask: null, sessions: {} });
+  });
+
   it("형식이 다른 state.json(세션 role: plan) → 빈 상태", () => {
     const s = new Store(dir);
     fs.writeFileSync(

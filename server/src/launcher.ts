@@ -25,6 +25,7 @@ export interface LaunchOptions {
   spawn?: SpawnFn;
   now?: Date;
   hex?: string; // 4자리 hex, 기본 랜덤
+  resumeSessionId?: string; // 있으면 --resume <id> + "AISM resume: <folder>" (S-9)
 }
 
 const toSlash = (p: string): string => p.replace(/\\/g, "/");
@@ -104,11 +105,19 @@ export function launchSession(opts: LaunchOptions): { sessionKey: string; dir: s
   argsParts.push(`--append-system-prompt-file "${toWin(path.join(dir, "prompt.md"))}"`);
   argsParts.push(`--settings "${toWin(path.join(dir, "settings.json"))}"`);
   argsParts.push(`--permission-mode ${roleCfg.permissionMode ?? "acceptEdits"}`);
-  for (const p of projectCfg.protectedPaths) {
-    argsParts.push(`--disallowedTools "Edit(${p})"`);
+  // 보호 경로 — CODER에는 적용하지 않는다 (M2 §3 A).
+  if (role !== "coder") {
+    for (const p of projectCfg.protectedPaths) {
+      argsParts.push(`--disallowedTools "Edit(${p})"`);
+    }
   }
   argsParts.push(`--name "AISM ${role.toUpperCase()} ${folder ?? "new"}"`);
-  if (folder) argsParts.push(`"AISM task: ${folder}"`);
+  if (opts.resumeSessionId) {
+    argsParts.push(`--resume ${opts.resumeSessionId}`);
+    argsParts.push(`"AISM resume: ${folder}"`);
+  } else if (folder) {
+    argsParts.push(`"AISM task: ${folder}"`);
+  }
   fs.writeFileSync(path.join(dir, "args.txt"), argsParts.join(" ") + "\n");
 
   // 실행 — wt.exe -w new --title "AISM · <folder|new> · <ROLE>" cmd /k <bat> <dir>.

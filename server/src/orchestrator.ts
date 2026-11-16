@@ -6,28 +6,39 @@ import { AISM_ROOT } from "./config.js";
 import type { ActiveTask, Store } from "./store.js";
 import { newActiveTask } from "./store.js";
 import type { Sessions, SessionState } from "./sessions.js";
-import type { Snapshot } from "./artifacts.js";
-import { readSnapshot as defaultReadSnapshot, findNewPlanV1 as defaultFindNewPlanV1 } from "./artifacts.js";
+import type { Snapshot, TodoSnapshot } from "./artifacts.js";
+import {
+  readSnapshot as defaultReadSnapshot,
+  findNewPlanV1 as defaultFindNewPlanV1,
+  readTodoSnapshot as defaultReadTodoSnapshot,
+  emptyTodoSnapshot,
+} from "./artifacts.js";
 import type { Action, PeerView, Role, Reply } from "./machine.js";
 import { evaluate, instructionApproveAndTodo } from "./machine.js";
 import type { LaunchOptions } from "./launcher.js";
 import { launchSession as defaultLaunch } from "./launcher.js";
 import { NotifyHub } from "./notify.js";
+import { shouldToast, showToast } from "./toast.js";
 
 export type PendingAction =
   | { kind: "deliver"; role: Role; text: string }
   | { kind: "decision" }
   | { kind: "gate"; n: number }
   | { kind: "pass"; n: number; text: string }
-  | { kind: "todo" }
+  | { kind: "todo-gate"; n: number }
+  | { kind: "coder" }
+  | { kind: "done" }
   | { kind: "describe" };
 
 export type Display = "working" | "waiting" | "your-turn" | "idle" | "disconnected";
 
-// pendingAction의 대상 역할 — decision·gate·pass·describe·todo는 PLANNER, deliver는 해당 역할.
+// pendingAction의 대상 역할 — deliver는 해당 역할, coder는 CODER, done은 없음, 나머지는 PLANNER.
 function targetOf(pa: PendingAction | null): Role | null {
   if (!pa) return null;
-  return pa.kind === "deliver" ? pa.role : "planner";
+  if (pa.kind === "deliver") return pa.role;
+  if (pa.kind === "coder") return "coder";
+  if (pa.kind === "done") return null;
+  return "planner";
 }
 
 export interface OrchestratorDeps {
@@ -37,7 +48,9 @@ export interface OrchestratorDeps {
   hub?: NotifyHub;
   launch?: (opts: LaunchOptions) => { sessionKey: string; dir: string };
   readSnapshot?: (taskDir: string) => Snapshot;
+  readTodoSnapshot?: (taskDir: string) => TodoSnapshot;
   findNewPlanV1?: (plansDir: string, sinceMs: number) => string[];
+  toast?: (title: string, message: string) => void;
   aismRoot?: string;
 }
 
@@ -48,7 +61,9 @@ export class Orchestrator {
   private hub: NotifyHub;
   private launch: (opts: LaunchOptions) => { sessionKey: string; dir: string };
   private readSnapshot: (taskDir: string) => Snapshot;
+  private readTodoSnapshot: (taskDir: string) => TodoSnapshot;
   private findNewPlanV1: (plansDir: string, sinceMs: number) => string[];
+  private toast: (title: string, message: string) => void;
   private aismRoot: string;
 
   constructor(deps: OrchestratorDeps) {
@@ -58,7 +73,9 @@ export class Orchestrator {
     this.hub = deps.hub ?? new NotifyHub();
     this.launch = deps.launch ?? defaultLaunch;
     this.readSnapshot = deps.readSnapshot ?? defaultReadSnapshot;
+    this.readTodoSnapshot = deps.readTodoSnapshot ?? defaultReadTodoSnapshot;
     this.findNewPlanV1 = deps.findNewPlanV1 ?? defaultFindNewPlanV1;
+    this.toast = deps.toast ?? showToast;
     this.aismRoot = deps.aismRoot ?? AISM_ROOT;
     this.sessions.onNotify = (key, level, message) => this.emitNotify(key, level, message);
     this.sessions.onChange = () => this.broadcastState();
@@ -94,8 +111,8 @@ export class Orchestrator {
     // 배정 게이트 (W4) — 현재 작업에 배정된 세션이 아니면 즉시 allow (undelivered·session_id·평가 모두 생략).
     const task = this.store.state.activeTask;
     const role =
-      task && (task.assigned.planner === sessionKey ? "planner" : task.assigned.verifier === sessionKey ? "verifier" : null);
-    if (!role) {
+      task ? ((["planner", "verifier", "coder"] as const).find((r) => task.assigned[r] === sessionKey) ?? null) : null;
+    if (!task || !role) {
       reply({ action: "allow" });
       return;
     }
@@ -122,6 +139,7 @@ export class Orchestrator {
       sender: { sessionKey, role, bound: task.folder !== null },
       taskActive: true, // 배정 게이트 통과 시 activeTask는 항상 존재.
       snapshot,
+      todo: task.folder !== null ? this.todoSnapshot(task.project, task.folder) : emptyTodoSnapshot(),
       newPlanFolders,
       peers: this.peersOf(task),
       record: task.record,
@@ -132,9 +150,9 @@ export class Orchestrator {
   }
 
   // 현재 작업에 배정된 역할별 세션 뷰 (W4).
-  private peersOf(task: ActiveTask): { planner?: PeerView; verifier?: PeerView } {
-    const result: { planner?: PeerView; verifier?: PeerView } = {};
-    for (const role of ["planner", "verifier"] as const) {
+  private peersOf(task: ActiveTask): { planner?: PeerView; verifier?: PeerView; coder?: PeerView } {
+    const result: { planner?: PeerView; verifier?: PeerView; coder?: PeerView } = {};
+    for (const role of ["planner", "verifier", "coder"] as const) {
       const key = task.assigned[role];
       if (key) result[role] = { sessionKey: key, state: this.sessions.stateOf(key) ?? "detached" };
     }
@@ -225,10 +243,11 @@ export class Orchestrator {
     task.undelivered = task.undelivered.filter((u) => u.role !== role);
   }
 
-  // SSE notify + 이벤트 기록.
+  // SSE notify + 이벤트 기록 + Windows 토스트 (G-5).
   emitNotify(key: string, level: "info" | "warn", message: string, copyText?: string): void {
     this.store.appendEvent({ type: "notify", key, level, message });
     this.hub.broadcast("notify", { key, level, message, copyText });
+    if (this.config.toast !== false && shouldToast(level, key)) this.toast("AISM", message);
   }
 
   // 상태 변경 시 전체 상태 브로드캐스트.
@@ -252,24 +271,31 @@ export class Orchestrator {
   // GET /api/state.
   getState() {
     const task = this.store.state.activeTask;
-    const sessions: Record<string, { role: Role; state: SessionState }> = {};
+    const sessions: Record<string, { role: Role; state: SessionState; resumable: boolean }> = {};
     for (const [key, info] of Object.entries(this.store.state.sessions)) {
-      sessions[key] = { role: info.role, state: this.sessions.stateOf(key) ?? "detached" };
+      sessions[key] = {
+        role: info.role,
+        state: this.sessions.stateOf(key) ?? "detached",
+        resumable: info.activeSessionId !== null,
+      };
     }
     const pa = this.pendingAction();
     const assignedState = {
       planner: task?.assigned.planner ? (this.sessions.stateOf(task.assigned.planner) ?? "detached") : null,
       verifier: task?.assigned.verifier ? (this.sessions.stateOf(task.assigned.verifier) ?? "detached") : null,
+      coder: task?.assigned.coder ? (this.sessions.stateOf(task.assigned.coder) ?? "detached") : null,
     };
     const assignedDisplay = {
       planner: this.displayOf("planner", task, pa),
       verifier: this.displayOf("verifier", task, pa),
+      coder: this.displayOf("coder", task, pa),
     };
     return {
       activeTask: task,
       assignedState,
       assignedDisplay,
       snapshot: task && task.folder !== null ? this.taskSnapshot(task.project, task.folder) : null,
+      todo: task && task.folder !== null ? this.todoSnapshot(task.project, task.folder) : null,
       sessions,
       projects: Object.keys(this.config.projects),
       pendingAction: pa,
@@ -301,7 +327,23 @@ export class Orchestrator {
     if (snapshot.verdict === "PASS" && snapshot.status === "IN_REVIEW") {
       return { kind: "pass", n: N ?? 0, text: instructionApproveAndTodo(N ?? 0) };
     }
-    if (snapshot.status === "TODO_READY") return { kind: "todo" };
+    if (snapshot.status === "TODO_READY") {
+      const todo = this.todoSnapshot(task.project, task.folder);
+      const T = todo.latestN;
+      if (
+        T !== null &&
+        todo.verdict === "REVISE" &&
+        T >= this.config.confirmFromVersion &&
+        !fs.existsSync(path.join(projectCfg.root, projectCfg.plansDir, task.folder, `todo-v${T + 1}.md`))
+      ) {
+        return { kind: "todo-gate", n: T };
+      }
+    }
+    if (snapshot.status === "IN_PROGRESS") {
+      const key = task.assigned.coder;
+      if (key && this.sessions.stateOf(key) === "idle") return { kind: "coder" };
+    }
+    if (snapshot.status === "DONE") return { kind: "done" };
     return null;
   }
 
@@ -327,11 +369,12 @@ export class Orchestrator {
     return { ok: true, status: 200 };
   }
 
-  // POST /api/tasks/relaunch — 배정 기준 (W4).
-  relaunch(role: Role): { ok: boolean; status: number; error?: string } {
+  // POST /api/tasks/relaunch — 배정 기준 (W4). mode "resume" = 이전 세션 이어서 (S-9).
+  relaunch(role: Role, mode: "new" | "resume" = "new"): { ok: boolean; status: number; error?: string } {
     const task = this.store.state.activeTask;
     if (!task) return { ok: false, status: 409, error: "no active task" };
-    if (role === "verifier" && task.folder === null) return { ok: false, status: 409, error: "folder is null" };
+    if ((role === "verifier" || role === "coder") && task.folder === null)
+      return { ok: false, status: 409, error: "folder is null" };
     const assignedKey = task.assigned[role];
     const st = assignedKey ? (this.sessions.stateOf(assignedKey) ?? "detached") : null;
     const allowed =
@@ -340,6 +383,10 @@ export class Orchestrator {
       st === "idle" ||
       (role === "planner" && task.folder === null && st === "unbound");
     if (!allowed) return { ok: false, status: 409, error: `session is ${st}` };
+    const resumeId = assignedKey ? (this.store.state.sessions[assignedKey]?.activeSessionId ?? null) : null;
+    if (mode === "resume" && (task.folder === null || resumeId === null || !(st === "detached" || st === "idle"))) {
+      return { ok: false, status: 409, error: "cannot resume" };
+    }
     const result = this.launch({
       config: this.config,
       project: task.project,
@@ -347,10 +394,20 @@ export class Orchestrator {
       folder: task.folder,
       aismRoot: this.aismRoot,
       store: this.store,
+      ...(mode === "resume" && resumeId ? { resumeSessionId: resumeId } : {}),
     });
-    this.sessions.register(result.sessionKey, role === "planner" && task.folder === null ? "unbound" : "working");
+    this.sessions.register(
+      result.sessionKey,
+      mode === "resume" ? "working" : role === "planner" && task.folder === null ? "unbound" : "working",
+    );
     this.assign(task, role, result.sessionKey);
-    this.store.appendEvent({ type: "launch", role, sessionKey: result.sessionKey, relaunch: true });
+    this.store.appendEvent({
+      type: "launch",
+      role,
+      sessionKey: result.sessionKey,
+      relaunch: true,
+      ...(mode === "resume" ? { resume: true } : {}),
+    });
     this.store.save();
     this.broadcastState();
     return { ok: true, status: 200 };
@@ -360,7 +417,7 @@ export class Orchestrator {
   closeTask(): void {
     const task = this.store.state.activeTask;
     if (task) {
-      for (const key of [task.assigned.planner, task.assigned.verifier]) {
+      for (const key of [task.assigned.planner, task.assigned.verifier, task.assigned.coder]) {
         if (key) this.sessions.resolve(key, { action: "allow" }, "task-closed");
       }
     }
@@ -377,6 +434,10 @@ export class Orchestrator {
 
   private taskSnapshot(project: string, folder: string): Snapshot {
     return this.readSnapshot(path.join(this.plansDir(project), folder));
+  }
+
+  private todoSnapshot(project: string, folder: string): TodoSnapshot {
+    return this.readTodoSnapshot(path.join(this.plansDir(project), folder));
   }
 }
 

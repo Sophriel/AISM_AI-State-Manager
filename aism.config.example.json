@@ -11,7 +11,8 @@
   },
   "roles": {
     "planner": { "endpoint": "cloud", "prompt": ["roles/_workflow.md", "roles/planner.md"], "permissionMode": "auto" },
-    "verifier": { "endpoint": "local", "prompt": ["roles/_workflow.md", "roles/verifier.md"], "permissionMode": "acceptEdits" }
+    "verifier": { "endpoint": "local", "prompt": ["roles/_workflow.md", "roles/verifier.md"], "permissionMode": "acceptEdits" },
+    "coder": { "endpoint": "local", "prompt": ["roles/_workflow.md", "roles/coder.md"], "permissionMode": "acceptEdits" }
   },
   "projects": {
     "EWE": {
@@ -24,5 +25,6 @@
   "confirmFromVersion": 5,
   "maxConsecutiveBlocks": 3,
   "parkLimitSec": 3300,
-  "hookTimeoutSec": 3600
+  "hookTimeoutSec": 3600,
+  "toast": true
 }

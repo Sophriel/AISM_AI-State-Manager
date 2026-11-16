@@ -73,12 +73,28 @@ describe("config", () => {
     expect(() => loadConfig(writeTemp(bad))).toThrow(/foo: 정의되지 않은 키/);
   });
 
-  it("roles에 planner·verifier 외 키면 throw", () => {
+  it("roles에 planner·verifier·coder 외 키면 throw", () => {
     const bad = {
       ...example,
-      roles: { ...example.roles, coder: { ...example.roles.planner } },
+      roles: { ...example.roles, foo: { ...example.roles.planner } },
     };
-    expect(() => loadConfig(writeTemp(bad))).toThrow(/roles\.coder: 정의되지 않은 키/);
+    expect(() => loadConfig(writeTemp(bad))).toThrow(/roles\.foo: 정의되지 않은 키/);
+  });
+
+  it("roles.coder 누락이면 throw", () => {
+    const bad = { ...example, roles: { planner: example.roles.planner, verifier: example.roles.verifier } };
+    expect(() => loadConfig(writeTemp(bad))).toThrow(/roles\.coder: 없음/);
+  });
+
+  it("toast 키를 뺀 설정 → 통과", () => {
+    const ok = { ...example } as Record<string, unknown>;
+    delete ok.toast;
+    expect(loadConfig(writeTemp(ok)).port).toBe(4400);
+  });
+
+  it("toast: \"yes\"면 throw", () => {
+    const bad = { ...example, toast: "yes" };
+    expect(() => loadConfig(writeTemp(bad))).toThrow(/toast: boolean이어야 함/);
   });
 
   it("role 객체에 정의되지 않은 키면 throw", () => {
@@ -137,6 +153,7 @@ describe("config", () => {
         ...example.roles,
         planner: { ...example.roles.planner, endpoint: "myGateway" },
         verifier: { ...example.roles.verifier, endpoint: "myGateway" },
+        coder: { ...example.roles.coder, endpoint: "myGateway" },
       },
     };
     const p = writeTemp(ok);

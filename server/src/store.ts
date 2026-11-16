@@ -9,7 +9,7 @@ export interface ActiveTask {
   project: string;
   folder: string | null;
   startedAt: number;
-  assigned: { planner: string | null; verifier: string | null };
+  assigned: { planner: string | null; verifier: string | null; coder: string | null };
   record: TaskRecord;
   undelivered: Undelivered[];
 }
@@ -46,7 +46,7 @@ export function newActiveTask(project: string, startedAt: number): ActiveTask {
     project,
     folder: null,
     startedAt,
-    assigned: { planner: null, verifier: null },
+    assigned: { planner: null, verifier: null, coder: null },
     record: { notified: [], consecutiveBlocks: {}, instructed: [] },
     undelivered: [],
   };
@@ -79,8 +79,9 @@ export function isCurrentState(x: unknown): x is State {
     const a = t.assigned;
     if (!isObj(a)) return false;
     const aKeys = Object.keys(a);
-    if (aKeys.length !== 2 || !aKeys.includes("planner") || !aKeys.includes("verifier")) return false;
-    for (const k of ["planner", "verifier"]) {
+    if (aKeys.length !== 3 || !aKeys.includes("planner") || !aKeys.includes("verifier") || !aKeys.includes("coder"))
+      return false;
+    for (const k of ["planner", "verifier", "coder"]) {
       const v = a[k];
       if (v !== null && typeof v !== "string") return false;
     }
@@ -105,7 +106,7 @@ export function isCurrentState(x: unknown): x is State {
       if (!isObj(item)) return false;
       const uKeys = Object.keys(item);
       if (uKeys.length !== 2 || !uKeys.includes("role") || !uKeys.includes("text")) return false;
-      if (item.role !== "planner" && item.role !== "verifier") return false;
+      if (!["planner", "verifier", "coder"].includes(item.role as string)) return false;
       if (typeof item.text !== "string") return false;
     }
   }
@@ -117,7 +118,7 @@ export function isCurrentState(x: unknown): x is State {
     const sKeys = Object.keys(info);
     const expectedS = ["role", "project", "folder", "launchedAt", "sessionIds", "activeSessionId", "switchedOnce"];
     if (sKeys.length !== expectedS.length || !expectedS.every((k) => sKeys.includes(k))) return false;
-    if (info.role !== "planner" && info.role !== "verifier") return false;
+    if (!["planner", "verifier", "coder"].includes(info.role as string)) return false;
     if (typeof info.project !== "string") return false;
     if (info.folder !== null && typeof info.folder !== "string") return false;
     if (typeof info.launchedAt !== "number") return false;

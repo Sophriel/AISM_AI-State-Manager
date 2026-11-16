@@ -7,6 +7,11 @@ import {
   instructionVerdictLine,
   instructionApproveAndTodo,
   instructionFinishTodo,
+  instructionReviewTodo,
+  instructionTodoRevise,
+  instructionTodoVerdictLine,
+  instructionImplement,
+  instructionBlocked,
   type MachineInput,
   type Action,
 } from "./machine.js";
@@ -16,6 +21,7 @@ function input(overrides: Partial<MachineInput> = {}): MachineInput {
     sender: { sessionKey: "planner-1", role: "planner", bound: true },
     taskActive: true,
     snapshot: { latestN: 3, status: "IN_REVIEW", verifyExists: false, verdict: null },
+    todo: { latestN: null, verifyExists: false, verdict: null },
     newPlanFolders: [],
     peers: {},
     record: { notified: [], consecutiveBlocks: {}, instructed: [] },
@@ -206,13 +212,47 @@ describe("행 5 — APPROVED / TODO_READY / 그 이후 (W5)", () => {
     expect(b?.reply).toEqual({ action: "block", reason: instructionFinishTodo(3) });
   });
 
-  it("5b. TODO_READY → allow + notify(todo-ready-v3, info)", () => {
+  it("5t(a). TODO_READY, todo 없음 → allow + notify(notodo-v3, warn)", () => {
     const actions = evaluate(
       input({ snapshot: { latestN: 3, status: "TODO_READY", verifyExists: true, verdict: "PASS" } }),
     );
     expect(allowTo(actions, "planner-1")).toBe(true);
     const n = notifies(actions);
-    expect(n.map((x) => [x.key, x.level])).toEqual([["todo-ready-v3", "info"]]);
+    expect(n.map((x) => [x.key, x.level])).toEqual([["notodo-v3", "warn"]]);
+  });
+
+  it("5t(b). TODO_READY, todo T=1·verify 없음, peers 없음 → hold(planner-1) + launch(coder)", () => {
+    const actions = evaluate(
+      input({
+        snapshot: { latestN: 3, status: "TODO_READY", verifyExists: true, verdict: "PASS" },
+        todo: { latestN: 1, verifyExists: false, verdict: null },
+      }),
+    );
+    expect(actions.some((a) => a.kind === "hold" && a.sessionKey === "planner-1")).toBe(true);
+    expect(actions).toContainEqual({ kind: "launch", role: "coder" });
+  });
+
+  it("5t(b'). 같은 조건 peers.coder parked → coder에 block(instructionReviewTodo(1))", () => {
+    const actions = evaluate(
+      input({
+        snapshot: { latestN: 3, status: "TODO_READY", verifyExists: true, verdict: "PASS" },
+        todo: { latestN: 1, verifyExists: false, verdict: null },
+        peers: { coder: { sessionKey: "coder-1", state: "parked" } },
+      }),
+    );
+    expect(actions.some((a) => a.kind === "hold" && a.sessionKey === "planner-1")).toBe(true);
+    const b = blockTo(actions, "coder-1");
+    expect(b?.reply).toEqual({ action: "block", reason: instructionReviewTodo(1) });
+  });
+
+  it("5t(c). TODO_READY, verify PASS → allow, 알림 없음", () => {
+    const actions = evaluate(
+      input({
+        snapshot: { latestN: 3, status: "TODO_READY", verifyExists: true, verdict: "PASS" },
+        todo: { latestN: 1, verifyExists: true, verdict: "PASS" },
+      }),
+    );
+    expect(actions).toEqual([{ kind: "reply", sessionKey: "planner-1", reply: { action: "allow" } }]);
   });
 
   it("5c. IN_PROGRESS / BLOCKED / DONE → allow, 알림 없음", () => {
@@ -384,6 +424,169 @@ describe("행 10 — verify-vN 없음", () => {
     expect(allowTo(actions, "verifier-1")).toBe(true);
     const n = notifies(actions);
     expect(n.map((x) => x.key)).toEqual(["noverify-v3"]);
+  });
+});
+
+describe("CODER 행 c1~c9", () => {
+  const coder = { sessionKey: "coder-1", role: "coder" as const, bound: true };
+
+  it("c1. TODO_READY, todo 없음 → allow + notify(notodo-v3, warn)", () => {
+    const actions = evaluate(
+      input({
+        sender: coder,
+        snapshot: { latestN: 3, status: "TODO_READY", verifyExists: true, verdict: "PASS" },
+      }),
+    );
+    expect(allowTo(actions, "coder-1")).toBe(true);
+    const n = notifies(actions);
+    expect(n.map((x) => [x.key, x.level])).toEqual([["notodo-v3", "warn"]]);
+  });
+
+  it("c2. TODO_READY, todo T=1·verify 없음 → allow + notify(notodoverify-v1, warn)", () => {
+    const actions = evaluate(
+      input({
+        sender: coder,
+        snapshot: { latestN: 3, status: "TODO_READY", verifyExists: true, verdict: "PASS" },
+        todo: { latestN: 1, verifyExists: false, verdict: null },
+      }),
+    );
+    expect(allowTo(actions, "coder-1")).toBe(true);
+    const n = notifies(actions);
+    expect(n.map((x) => [x.key, x.level])).toEqual([["notodoverify-v1", "warn"]]);
+  });
+
+  it("c3. REVISE, T=1 < confirmFromVersion, planner parked → planner에 block(instructionTodoRevise(1)) + hold(coder-1)", () => {
+    const actions = evaluate(
+      input({
+        sender: coder,
+        snapshot: { latestN: 3, status: "TODO_READY", verifyExists: true, verdict: "PASS" },
+        todo: { latestN: 1, verifyExists: true, verdict: "REVISE" },
+        peers: { planner: { sessionKey: "planner-1", state: "parked" } },
+      }),
+    );
+    expect(actions.some((a) => a.kind === "hold" && a.sessionKey === "coder-1")).toBe(true);
+    const b = blockTo(actions, "planner-1");
+    expect(b?.reply).toEqual({ action: "block", reason: instructionTodoRevise(1) });
+  });
+
+  it("c4. REVISE, T=5 ≥ confirmFromVersion → hold + notify(todo-gate-v5, warn), block 없음", () => {
+    const actions = evaluate(
+      input({
+        sender: coder,
+        snapshot: { latestN: 3, status: "TODO_READY", verifyExists: true, verdict: "PASS" },
+        todo: { latestN: 5, verifyExists: true, verdict: "REVISE" },
+        peers: { planner: { sessionKey: "planner-1", state: "parked" } },
+      }),
+    );
+    expect(actions.some((a) => a.kind === "hold" && a.sessionKey === "coder-1")).toBe(true);
+    const n = notifies(actions);
+    expect(n.map((x) => [x.key, x.level])).toEqual([["todo-gate-v5", "warn"]]);
+    expect(blockTo(actions, "planner-1")).toBeUndefined();
+  });
+
+  it("c5. MALFORMED → coder에 block(instructionTodoVerdictLine(1))", () => {
+    const actions = evaluate(
+      input({
+        sender: coder,
+        snapshot: { latestN: 3, status: "TODO_READY", verifyExists: true, verdict: "PASS" },
+        todo: { latestN: 1, verifyExists: true, verdict: "MALFORMED" },
+      }),
+    );
+    const b = blockTo(actions, "coder-1");
+    expect(b?.reply).toEqual({ action: "block", reason: instructionTodoVerdictLine(1) });
+  });
+
+  it("c6. PASS 첫 평가 → block(instructionImplement(1)) + record.instructed에 impl-v1", () => {
+    const actions = evaluate(
+      input({
+        sender: coder,
+        snapshot: { latestN: 3, status: "TODO_READY", verifyExists: true, verdict: "PASS" },
+        todo: { latestN: 1, verifyExists: true, verdict: "PASS" },
+      }),
+    );
+    const b = blockTo(actions, "coder-1");
+    expect(b?.reply).toEqual({ action: "block", reason: instructionImplement(1) });
+    const rec = records(actions)[0];
+    expect(rec.instructed).toContain("impl-v1");
+  });
+
+  it("c6. instructed에 impl-v1 기록됨 → allow", () => {
+    const actions = evaluate(
+      input({
+        sender: coder,
+        snapshot: { latestN: 3, status: "TODO_READY", verifyExists: true, verdict: "PASS" },
+        todo: { latestN: 1, verifyExists: true, verdict: "PASS" },
+        record: { notified: [], consecutiveBlocks: {}, instructed: ["impl-v1"] },
+      }),
+    );
+    expect(actions).toEqual([{ kind: "reply", sessionKey: "coder-1", reply: { action: "allow" } }]);
+  });
+
+  it("c7. IN_PROGRESS → allow + notify(coder-stopped-v1, info)", () => {
+    const actions = evaluate(
+      input({
+        sender: coder,
+        snapshot: { latestN: 3, status: "IN_PROGRESS", verifyExists: true, verdict: "PASS" },
+        todo: { latestN: 1, verifyExists: true, verdict: "PASS" },
+      }),
+    );
+    expect(allowTo(actions, "coder-1")).toBe(true);
+    const n = notifies(actions);
+    expect(n.map((x) => [x.key, x.level])).toEqual([["coder-stopped-v1", "info"]]);
+  });
+
+  it("c8. BLOCKED, planner parked → planner에 block(instructionBlocked(3)) + 기록 blocked-v3", () => {
+    const actions = evaluate(
+      input({
+        sender: coder,
+        snapshot: { latestN: 3, status: "BLOCKED", verifyExists: true, verdict: "PASS" },
+        peers: { planner: { sessionKey: "planner-1", state: "parked" } },
+      }),
+    );
+    expect(allowTo(actions, "coder-1")).toBe(true);
+    const b = blockTo(actions, "planner-1");
+    expect(b?.reply).toEqual({ action: "block", reason: instructionBlocked(3) });
+    const rec = records(actions)[0];
+    expect(rec.instructed).toContain("blocked-v3");
+  });
+
+  it("c8. BLOCKED, planner idle → undeliverable(planner), instructed 기록 없음", () => {
+    const actions = evaluate(
+      input({
+        sender: coder,
+        snapshot: { latestN: 3, status: "BLOCKED", verifyExists: true, verdict: "PASS" },
+        peers: { planner: { sessionKey: "planner-1", state: "idle" } },
+      }),
+    );
+    expect(allowTo(actions, "coder-1")).toBe(true);
+    expect(actions).toContainEqual({ kind: "undeliverable", role: "planner", text: instructionBlocked(3) });
+    const rec = records(actions)[0];
+    expect(rec.instructed ?? []).not.toContain("blocked-v3");
+  });
+
+  it("c9. DONE, planner parked → planner allow + coder allow + notify(done-v3, info)", () => {
+    const actions = evaluate(
+      input({
+        sender: coder,
+        snapshot: { latestN: 3, status: "DONE", verifyExists: true, verdict: "PASS" },
+        peers: { planner: { sessionKey: "planner-1", state: "parked" } },
+      }),
+    );
+    expect(allowTo(actions, "coder-1")).toBe(true);
+    expect(allowTo(actions, "planner-1")).toBe(true);
+    const n = notifies(actions);
+    expect(n.map((x) => [x.key, x.level])).toEqual([["done-v3", "info"]]);
+  });
+
+  it("c9. DONE, planner 없음 → coder allow만 (planner reply 없음)", () => {
+    const actions = evaluate(
+      input({
+        sender: coder,
+        snapshot: { latestN: 3, status: "DONE", verifyExists: true, verdict: "PASS" },
+      }),
+    );
+    expect(allowTo(actions, "coder-1")).toBe(true);
+    expect(replies(actions).some((r) => r.sessionKey === "planner-1")).toBe(false);
   });
 });
 

@@ -1,8 +1,8 @@
 // T5 — 상태 머신 (plan-v3 §3.6). 순수 함수: 파일·시간·네트워크 접근 금지.
-// 판정표 행 0~11을 그 순서대로 적용한다.
-import type { Snapshot } from "./artifacts.js";
+// 판정표 행 0~11 + 5t·c1~c9(M2)를 그 순서대로 적용한다.
+import type { Snapshot, TodoSnapshot } from "./artifacts.js";
 
-export type Role = "planner" | "verifier";
+export type Role = "planner" | "verifier" | "coder";
 
 export interface PeerView {
   sessionKey: string;
@@ -19,8 +19,9 @@ export interface MachineInput {
   sender: { sessionKey: string; role: Role; bound: boolean };
   taskActive: boolean;
   snapshot: Snapshot;
+  todo: TodoSnapshot;
   newPlanFolders: string[];
-  peers: { planner?: PeerView; verifier?: PeerView };
+  peers: { planner?: PeerView; verifier?: PeerView; coder?: PeerView };
   record: TaskRecord;
   config: { confirmFromVersion: number; maxConsecutiveBlocks: number };
 }
@@ -52,11 +53,27 @@ export function instructionApproveAndTodo(N: number): string {
 export function instructionFinishTodo(N: number): string {
   return `plan-v${N}.md가 APPROVED 상태다. todo를 작성하고 Status를 TODO_READY로 바꿔. todo 파일은 todo-v1.md이고, 이미 있으면 다음 버전 번호로 써.`;
 }
+// M2 — todo 루프 지시 (plan-v2 §3 C).
+export function instructionReviewTodo(T: number): string {
+  return `todo-v${T}.md를 검토해서 todo-v${T}-verify.md를 작성해.`;
+}
+export function instructionTodoRevise(T: number): string {
+  return `todo-v${T}-verify.md의 지적을 반영해서 todo-v${T + 1}.md를 작성해.`;
+}
+export function instructionTodoVerdictLine(T: number): string {
+  return `todo-v${T}-verify.md의 마지막 줄에 정확히 "판정: PASS" 또는 "판정: REVISE"를 써.`;
+}
+export function instructionImplement(T: number): string {
+  return `todo-v${T}-verify.md가 PASS다. todo-v${T}.md를 순서대로 구현해.`;
+}
+export function instructionBlocked(N: number): string {
+  return `plan-v${N}.md가 BLOCKED다. code-log.md의 Blocked 내용을 읽고 plan-v${N + 1}.md를 작성해.`;
+}
 
 const part = (v: string | number | null): string => (v === null ? "null" : String(v));
 
 export function evaluate(input: MachineInput): Action[] {
-  const { sender, taskActive, snapshot, newPlanFolders, peers, record, config } = input;
+  const { sender, taskActive, snapshot, todo, newPlanFolders, peers, record, config } = input;
   const actions: Action[] = [];
   const notified = new Set(record.notified);
   const instructed = new Set(record.instructed);
@@ -188,8 +205,17 @@ export function evaluate(input: MachineInput): Action[] {
       return finish();
     }
     if (snapshot.status === "TODO_READY") {
-      allow(sender.sessionKey);
-      notify(`todo-ready-v${part(N)}`, "info", "todo 작성 완료 — CODER 단계는 CODER 세션에서 진행하세요");
+      // 행 5t — todo 루프 (M2).
+      const T = todo.latestN;
+      if (T === null) {
+        allow(sender.sessionKey);
+        notify(`notodo-v${part(N)}`, "warn", `plan-v${part(N)}이 TODO_READY인데 todo 파일이 없습니다`);
+      } else if (!todo.verifyExists) {
+        actions.push({ kind: "hold", sessionKey: sender.sessionKey });
+        deliver("coder", instructionReviewTodo(T));
+      } else {
+        allow(sender.sessionKey);
+      }
       return finish();
     }
     if (snapshot.status === "IN_PROGRESS" || snapshot.status === "BLOCKED" || snapshot.status === "DONE") {
@@ -239,6 +265,77 @@ export function evaluate(input: MachineInput): Action[] {
       block(sender.sessionKey, instructionVerdictLine(N ?? 0));
       return finish();
     }
+  }
+
+  if (sender.role === "coder") {
+    const T = todo.latestN;
+    if (snapshot.status === "TODO_READY") {
+      if (T === null) {
+        // c1
+        allow(sender.sessionKey);
+        notify(`notodo-v${part(N)}`, "warn", `plan-v${part(N)}이 TODO_READY인데 todo 파일이 없습니다`);
+        return finish();
+      }
+      if (!todo.verifyExists) {
+        // c2
+        allow(sender.sessionKey);
+        notify(`notodoverify-v${T}`, "warn", `todo-v${T}-verify.md가 없습니다 — 검토 결과가 없습니다`);
+        return finish();
+      }
+      if (todo.verdict === "REVISE") {
+        actions.push({ kind: "hold", sessionKey: sender.sessionKey });
+        if (T < config.confirmFromVersion) {
+          // c3
+          deliver("planner", instructionTodoRevise(T));
+        } else {
+          // c4 — todo 게이트 (D2).
+          notify(`todo-gate-v${T}`, "warn", `todo-v${T} REVISE — 계속 개정하려면 PLANNER 창에서 지시하세요`);
+        }
+        return finish();
+      }
+      if (todo.verdict === "MALFORMED") {
+        // c5
+        block(sender.sessionKey, instructionTodoVerdictLine(T));
+        return finish();
+      }
+      if (todo.verdict === "PASS") {
+        // c6
+        const key = `impl-v${T}`;
+        if (instructed.has(key)) {
+          allow(sender.sessionKey);
+        } else if (block(sender.sessionKey, instructionImplement(T))) {
+          instructed.add(key);
+          dirty = true;
+        }
+        return finish();
+      }
+    }
+    if (snapshot.status === "IN_PROGRESS") {
+      // c7
+      allow(sender.sessionKey);
+      notify(`coder-stopped-v${part(T)}`, "info", "CODER가 구현 중 멈췄습니다 — CODER 창을 확인하세요");
+      return finish();
+    }
+    if (snapshot.status === "BLOCKED") {
+      // c8 (W-6)
+      allow(sender.sessionKey);
+      notify(`blocked-v${part(N)}`, "warn", `plan-v${part(N)} BLOCKED — PLANNER에 다음 plan 작성을 지시합니다`);
+      const key = `blocked-v${N ?? 0}`;
+      if (!instructed.has(key) && deliver("planner", instructionBlocked(N ?? 0)) === "blocked") {
+        instructed.add(key);
+        dirty = true;
+      }
+      return finish();
+    }
+    if (snapshot.status === "DONE") {
+      // c9
+      allow(sender.sessionKey);
+      notify(`done-v${part(N)}`, "info", `구현 완료 (plan-v${part(N)}) — 테스트 후 작업을 종료하세요`);
+      const p = peers.planner;
+      if (p && p.state === "parked") allow(p.sessionKey);
+      return finish();
+    }
+    // 그 외 → 행 11로 낙하.
   }
 
   // 행 11 — 그 외 모든 조합.

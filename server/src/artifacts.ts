@@ -30,6 +30,28 @@ function splitLines(raw: string): string[] {
   return raw.replace(/^﻿/, "").split(/\r\n|\r|\n/).map((l) => l.replace(/\r$/, ""));
 }
 
+// verify 파일 판정 — 없으면 { exists: false, verdict: null }. 있으면 끝의 빈 줄을 제외한
+// 마지막 줄을 \r 제거 후 "판정: PASS" / "판정: REVISE"와 정확히 비교, 그 외 "MALFORMED".
+export function readVerdict(verifyPath: string): { exists: boolean; verdict: "PASS" | "REVISE" | "MALFORMED" | null } {
+  let exists = false;
+  let verdict: "PASS" | "REVISE" | "MALFORMED" | null = null;
+  try {
+    exists = fs.statSync(verifyPath).isFile();
+  } catch {
+    exists = false;
+  }
+  if (exists) {
+    const lines = splitLines(fs.readFileSync(verifyPath, "utf8"));
+    let last = lines.length;
+    while (last > 0 && lines[last - 1].trim() === "") last--;
+    const lastLine = last > 0 ? lines[last - 1] : "";
+    if (lastLine === "판정: PASS") verdict = "PASS";
+    else if (lastLine === "판정: REVISE") verdict = "REVISE";
+    else verdict = "MALFORMED";
+  }
+  return { exists, verdict };
+}
+
 export function readSnapshot(taskDir: string): Snapshot {
   let entries: string[];
   try {
@@ -64,27 +86,49 @@ export function readSnapshot(taskDir: string): Snapshot {
     status = "MISSING";
   }
 
-  // verdict: plan-vN-verify.md 없으면 null. 있으면 끝의 빈 줄을 제외한 마지막 줄을
-  // \r 제거 후 "판정: PASS" / "판정: REVISE"와 정확히 비교, 그 외 "MALFORMED".
-  const verifyPath = path.join(taskDir, `plan-v${latestN}-verify.md`);
-  let verifyExists = false;
-  let verdict: "PASS" | "REVISE" | "MALFORMED" | null = null;
-  try {
-    verifyExists = fs.statSync(verifyPath).isFile();
-  } catch {
-    verifyExists = false;
-  }
-  if (verifyExists) {
-    const lines = splitLines(fs.readFileSync(verifyPath, "utf8"));
-    let last = lines.length;
-    while (last > 0 && lines[last - 1].trim() === "") last--;
-    const lastLine = last > 0 ? lines[last - 1] : "";
-    if (lastLine === "판정: PASS") verdict = "PASS";
-    else if (lastLine === "판정: REVISE") verdict = "REVISE";
-    else verdict = "MALFORMED";
-  }
+  // verdict — plan-vN-verify.md (readVerdict 공통 규칙).
+  const { exists: verifyExists, verdict } = readVerdict(path.join(taskDir, `plan-v${latestN}-verify.md`));
 
   return { latestN, status, verifyExists, verdict };
+}
+
+// todo 스냅샷 — 최신 todo-vN.md와 그 verify 파일 (M2).
+export interface TodoSnapshot {
+  latestN: number | null;
+  verifyExists: boolean;
+  verdict: "PASS" | "REVISE" | "MALFORMED" | null;
+}
+
+const TODO_RE = /^todo-v(\d+)\.md$/;
+
+export function readTodoSnapshot(taskDir: string): TodoSnapshot {
+  let entries: string[];
+  try {
+    entries = fs.readdirSync(taskDir);
+  } catch {
+    return { latestN: null, verifyExists: false, verdict: null };
+  }
+
+  // 최신 T = ^todo-v(\d+)\.md$ 중 최대 (checklist·notes·verify는 매칭 안 됨).
+  let latestN: number | null = null;
+  for (const name of entries) {
+    const m = name.match(TODO_RE);
+    if (m) {
+      const n = Number(m[1]);
+      if (latestN === null || n > latestN) latestN = n;
+    }
+  }
+
+  if (latestN === null) {
+    return { latestN: null, verifyExists: false, verdict: null };
+  }
+
+  const { exists, verdict } = readVerdict(path.join(taskDir, `todo-v${latestN}-verify.md`));
+  return { latestN, verifyExists: exists, verdict };
+}
+
+export function emptyTodoSnapshot(): TodoSnapshot {
+  return { latestN: null, verifyExists: false, verdict: null };
 }
 
 // plansDir의 직속 폴더 중 plan-v1.md 생성 시각(birthtimeMs)이 sinceMs 이후인 폴더명 목록.

@@ -47,6 +47,7 @@ function makeConfig(): AismConfig {
     roles: {
       planner: { endpoint: "cloud", prompt: ["roles/planner.md"], permissionMode: "auto" },
       verifier: { endpoint: "local", prompt: ["roles/verifier.md"] },
+      coder: { endpoint: "local", prompt: [] },
     },
     projects: {
       EWE: {
@@ -214,5 +215,42 @@ describe("launchSession", () => {
       activeSessionId: null,
       switchedOnce: false,
     });
+  });
+
+  it("CODER — args에 --disallowedTools 없음, --name AISM CODER <folder>, 첫 프롬프트 AISM task", () => {
+    const config = makeConfig();
+    const { dir } = launchSession({
+      config,
+      project: "EWE",
+      role: "coder",
+      folder: "261111-alpha",
+      aismRoot,
+      spawn: () => {},
+      now: NOW,
+      hex: "1122",
+    });
+
+    const argsTxt = fs.readFileSync(path.join(dir, "args.txt"), "utf8");
+    expect(argsTxt).not.toContain("--disallowedTools");
+    expect(argsTxt).toContain('--name "AISM CODER 261111-alpha"');
+    expect(argsTxt).toContain('"AISM task: 261111-alpha"');
+  });
+
+  it("resume — args 끝이 --resume abc-123 \"AISM resume: 261111-alpha\"", () => {
+    const config = makeConfig();
+    const { dir } = launchSession({
+      config,
+      project: "EWE",
+      role: "planner",
+      folder: "261111-alpha",
+      aismRoot,
+      spawn: () => {},
+      now: NOW,
+      hex: "3344",
+      resumeSessionId: "abc-123",
+    });
+
+    const argsTxt = fs.readFileSync(path.join(dir, "args.txt"), "utf8");
+    expect(argsTxt.trimEnd().endsWith(`--resume abc-123 "AISM resume: 261111-alpha"`)).toBe(true);
   });
 });

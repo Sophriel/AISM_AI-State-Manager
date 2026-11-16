@@ -21,12 +21,13 @@ export interface ProjectConfig {
 export interface AismConfig {
   port: number;
   endpoints: Record<string, Record<string, string>>;
-  roles: { planner: RoleConfig; verifier: RoleConfig };
+  roles: { planner: RoleConfig; verifier: RoleConfig; coder: RoleConfig };
   projects: Record<string, ProjectConfig>;
   confirmFromVersion: number;
   maxConsecutiveBlocks: number;
   parkLimitSec: number;
   hookTimeoutSec: number;
+  toast?: boolean;
 }
 
 // 런처가 세션 시작 전에 항상 먼저 비운 뒤 역할 엔드포인트 묶음으로 덮어쓰는 변수 (R1-9).
@@ -62,8 +63,10 @@ const TOP_KEYS = [
   "hookTimeoutSec",
 ] as const;
 
+const OPTIONAL_TOP_KEYS = ["toast"] as const;
+
 const NUM_KEYS = ["port", "confirmFromVersion", "maxConsecutiveBlocks", "parkLimitSec", "hookTimeoutSec"] as const;
-const ROLE_NAMES = ["planner", "verifier"] as const;
+const ROLE_NAMES = ["planner", "verifier", "coder"] as const;
 const PROJECT_KEYS = ["root", "plansDir", "protectedPaths", "roleOverlay"] as const;
 const ROLE_CFG_KEYS = ["endpoint", "prompt", "permissionMode"] as const;
 
@@ -86,9 +89,10 @@ export function loadConfig(configPath: string): AismConfig {
   if (!isObj(data)) {
     problems.push("최상위: 객체여야 함");
   } else {
-    // 닫힌 객체 — 최상위.
+    // 닫힌 객체 — 최상위 (선택 키 포함).
     for (const k of Object.keys(data)) {
-      if (!(TOP_KEYS as readonly string[]).includes(k)) problems.push(`${k}: 정의되지 않은 키`);
+      if (!([...TOP_KEYS, ...OPTIONAL_TOP_KEYS] as readonly string[]).includes(k))
+        problems.push(`${k}: 정의되지 않은 키`);
     }
     for (const k of TOP_KEYS) {
       if (!(k in data)) problems.push(`${k}: 없음`);
@@ -97,6 +101,7 @@ export function loadConfig(configPath: string): AismConfig {
     for (const k of NUM_KEYS) {
       if (k in data && typeof data[k] !== "number") problems.push(`${k}: number여야 함`);
     }
+    if ("toast" in data && typeof data.toast !== "boolean") problems.push("toast: boolean이어야 함");
 
     // endpoints — 객체, 각 값은 객체, 그 안의 각 값은 string.
     const endpoints = data.endpoints;
@@ -144,7 +149,7 @@ export function loadConfig(configPath: string): AismConfig {
       }
     }
 
-    // roles — 객체, planner·verifier.
+    // roles — 객체, planner·verifier·coder.
     const roles = data.roles;
     if ("roles" in data) {
       if (!isObj(roles)) {

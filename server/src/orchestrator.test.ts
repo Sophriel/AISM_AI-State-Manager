@@ -8,7 +8,15 @@ import type { AismConfig } from "./config.js";
 import { Store, newActiveTask } from "./store.js";
 import { Sessions } from "./sessions.js";
 import { Orchestrator } from "./orchestrator.js";
-import { instructionApproveAndTodo, instructionPlanRevise, instructionVerifyPlan, type Reply } from "./machine.js";
+import {
+  instructionApproveAndTodo,
+  instructionPlanRevise,
+  instructionVerifyPlan,
+  instructionReviewTodo,
+  instructionTodoRevise,
+  type Reply,
+} from "./machine.js";
+import { shouldToast } from "./toast.js";
 import type { LaunchOptions } from "./launcher.js";
 
 type Timer = ReturnType<typeof setTimeout>;
@@ -22,7 +30,11 @@ function setup() {
   const config: AismConfig = {
     port: 4400,
     endpoints: { cloud: {}, local: {} },
-    roles: { planner: { endpoint: "cloud", prompt: [] }, verifier: { endpoint: "local", prompt: [] } },
+    roles: {
+      planner: { endpoint: "cloud", prompt: [] },
+      verifier: { endpoint: "local", prompt: [] },
+      coder: { endpoint: "local", prompt: [] },
+    },
     projects: { EWE: { root, plansDir: ".claude/plans", protectedPaths: [] } },
     confirmFromVersion: 5,
     maxConsecutiveBlocks: 3,
@@ -61,7 +73,15 @@ function setup() {
     return { sessionKey, dir: "/fake" };
   };
 
-  const orchestrator = new Orchestrator({ config, store, sessions, launch: fakeLaunch, aismRoot: root });
+  const toasts: string[] = [];
+  const orchestrator = new Orchestrator({
+    config,
+    store,
+    sessions,
+    launch: fakeLaunch,
+    aismRoot: root,
+    toast: (_t, m) => toasts.push(m),
+  });
 
   return {
     root,
@@ -73,6 +93,7 @@ function setup() {
     sessions,
     orchestrator,
     launchCalls,
+    toasts,
     cleanup: () => {
       fs.rmSync(root, { recursive: true, force: true });
       fs.rmSync(storeDir, { recursive: true, force: true });
@@ -89,7 +110,7 @@ describe("undeliverable (C2-1)", () => {
     store.state.activeTask = {
       ...newActiveTask("EWE", Date.now()),
       folder,
-      assigned: { planner: "planner-1", verifier: "verifier-1" },
+      assigned: { planner: "planner-1", verifier: "verifier-1", coder: null },
     };
     store.state.sessions["planner-1"] = {
       role: "planner",
@@ -145,7 +166,7 @@ describe("undeliverable (C2-1)", () => {
     store.state.activeTask = {
       ...newActiveTask("EWE", Date.now()),
       folder,
-      assigned: { planner: "planner-1", verifier: "verifier-1" },
+      assigned: { planner: "planner-1", verifier: "verifier-1", coder: null },
     };
     store.state.sessions["planner-1"] = {
       role: "planner",
@@ -201,7 +222,7 @@ describe("A — Stop 처리 밖 상태 변경 브로드캐스트", () => {
     store.state.activeTask = {
       ...newActiveTask("EWE", Date.now()),
       folder,
-      assigned: { planner: "planner-1", verifier: null },
+      assigned: { planner: "planner-1", verifier: null, coder: null },
     };
     store.state.sessions["planner-1"] = {
       role: "planner",
@@ -224,6 +245,46 @@ describe("A — Stop 처리 밖 상태 변경 브로드캐스트", () => {
     expect(writes[0].startsWith("event: state\n")).toBe(true);
     const state = JSON.parse(writes[0].split("data: ")[1]);
     expect(state.assignedDisplay.planner).toBe("disconnected");
+
+    env.cleanup();
+  });
+});
+
+describe("CODER 배정 게이트", () => {
+  it("CODER 배정 세션의 Stop은 배정 게이트를 통과한다", () => {
+    const env = setup();
+    const { orchestrator, store, sessions, taskDir, folder } = env;
+
+    store.state.activeTask = {
+      ...newActiveTask("EWE", Date.now()),
+      folder,
+      assigned: { planner: "planner-1", verifier: null, coder: "coder-1" },
+    };
+    store.state.sessions["coder-1"] = {
+      role: "coder",
+      project: "EWE",
+      folder,
+      launchedAt: 0,
+      sessionIds: ["c1"],
+      activeSessionId: "c1",
+      switchedOnce: false,
+    };
+    fs.mkdirSync(taskDir, { recursive: true });
+    fs.writeFileSync(path.join(taskDir, "plan-v1.md"), "Status: IN_PROGRESS\n");
+
+    let reply: Reply | null = null;
+    orchestrator.handleStop("coder-1", { session_id: "c1" }, (r) => (reply = r), () => {});
+
+    // stop 이벤트 다음에 reply 이벤트가 있고, 세션은 idle.
+    const events = store.readEvents();
+    const stopIdx = events.findIndex((e) => e.type === "stop" && e.sessionKey === "coder-1");
+    const replyIdx = events.findIndex((e) => e.type === "reply" && e.sessionKey === "coder-1");
+    expect(stopIdx).toBeGreaterThanOrEqual(0);
+    expect(replyIdx).toBeGreaterThan(stopIdx);
+    expect(sessions.stateOf("coder-1")).toBe("idle");
+
+    // c7 — IN_PROGRESS Stop → coder-stopped 알림 (todo 없음 → T null).
+    expect(events.some((e) => e.type === "notify" && e.key === "coder-stopped-vnull")).toBe(true);
 
     env.cleanup();
   });
@@ -359,7 +420,7 @@ describe("T10 시나리오 (W1·W4·W5·W6)", () => {
     store.state.activeTask = {
       ...newActiveTask("EWE", Date.now()),
       folder,
-      assigned: { planner: "planner-1", verifier: "verifier-1" },
+      assigned: { planner: "planner-1", verifier: "verifier-1", coder: null },
     };
     store.state.sessions["planner-1"] = {
       role: "planner",
@@ -444,6 +505,88 @@ describe("T10 시나리오 (W1·W4·W5·W6)", () => {
     env.cleanup();
   });
 
+  it("T7 — resume relaunch: 허용(detached·activeSessionId) + 409(activeSessionId null·parked·CODER folder null) + resumable", () => {
+    const env = setup();
+    const { orchestrator, store, sessions, folder, launchCalls } = env;
+
+    // bound 작업 + PLANNER(detached — 미등록) activeSessionId "p1".
+    store.state.activeTask = {
+      ...newActiveTask("EWE", Date.now()),
+      folder,
+      assigned: { planner: "planner-1", verifier: null, coder: null },
+    };
+    store.state.sessions["planner-1"] = {
+      role: "planner",
+      project: "EWE",
+      folder,
+      launchedAt: 0,
+      sessionIds: ["p1"],
+      activeSessionId: "p1",
+      switchedOnce: false,
+    };
+
+    // resumable — activeSessionId 있음 → true.
+    expect(orchestrator.getState().sessions["planner-1"].resumable).toBe(true);
+
+    // resume 허용 → ok + launchCalls 마지막 resumeSessionId "p1" + 새 키 working + 이벤트 resume: true.
+    const r1 = orchestrator.relaunch("planner", "resume");
+    expect(r1.ok).toBe(true);
+    const newKey = store.state.activeTask!.assigned.planner!;
+    expect(newKey).not.toBe("planner-1");
+    expect(sessions.stateOf(newKey)).toBe("working");
+    const lastLaunch = launchCalls[launchCalls.length - 1];
+    expect(lastLaunch.resumeSessionId).toBe("p1");
+    const events = store.readEvents();
+    const launchEv = events.filter((e) => e.type === "launch" && e.sessionKey === newKey);
+    expect(launchEv[launchEv.length - 1].resume).toBe(true);
+
+    // 409 — activeSessionId null (detached인데 session_id 없음) → cannot resume.
+    store.state.activeTask!.assigned.planner = "planner-2";
+    store.state.sessions["planner-2"] = {
+      role: "planner",
+      project: "EWE",
+      folder,
+      launchedAt: 0,
+      sessionIds: [],
+      activeSessionId: null,
+      switchedOnce: false,
+    };
+    const r2 = orchestrator.relaunch("planner", "resume");
+    expect(r2.ok).toBe(false);
+    expect(r2.error).toBe("cannot resume");
+
+    // 409 — 상태 parked → 기존 "session is parked".
+    store.state.activeTask!.assigned.planner = "planner-3";
+    store.state.sessions["planner-3"] = {
+      role: "planner",
+      project: "EWE",
+      folder,
+      launchedAt: 0,
+      sessionIds: ["p3"],
+      activeSessionId: "p3",
+      switchedOnce: false,
+    };
+    sessions.register("planner-3", "parked");
+    const r3 = orchestrator.relaunch("planner", "resume");
+    expect(r3.ok).toBe(false);
+    expect(r3.error).toBe("session is parked");
+
+    // 409 — CODER folder null.
+    store.state.activeTask = {
+      ...newActiveTask("EWE", Date.now()),
+      folder: null,
+      assigned: { planner: "planner-1", verifier: null, coder: "coder-1" },
+    };
+    const r4 = orchestrator.relaunch("coder", "resume");
+    expect(r4.ok).toBe(false);
+    expect(r4.error).toBe("folder is null");
+
+    // resumable — activeSessionId null → false.
+    expect(orchestrator.getState().sessions["planner-2"].resumable).toBe(false);
+
+    env.cleanup();
+  });
+
   it("W5 — PASS(PLANNER parked)→block+기록, PASS(PLANNER working)→무동작, PLANNER Stop block 1회→다음 allow, TODO_READY→allow+notify+pendingAction", () => {
     const env = setup();
     const { orchestrator, store, sessions, taskDir, folder } = env;
@@ -452,7 +595,7 @@ describe("T10 시나리오 (W1·W4·W5·W6)", () => {
     store.state.activeTask = {
       ...newActiveTask("EWE", Date.now()),
       folder,
-      assigned: { planner: "planner-1", verifier: "verifier-1" },
+      assigned: { planner: "planner-1", verifier: "verifier-1", coder: null },
     };
     store.state.sessions["planner-1"] = {
       role: "planner",
@@ -505,7 +648,7 @@ describe("T10 시나리오 (W1·W4·W5·W6)", () => {
     store2.state.activeTask = {
       ...newActiveTask("EWE", Date.now()),
       folder: folder2,
-      assigned: { planner: "planner-1", verifier: "verifier-1" },
+      assigned: { planner: "planner-1", verifier: "verifier-1", coder: null },
     };
     store2.state.sessions["planner-1"] = {
       role: "planner",
@@ -540,16 +683,82 @@ describe("T10 시나리오 (W1·W4·W5·W6)", () => {
     env2.orchestrator.handleStop("planner-1", { session_id: "p1" }, (r) => (r2 = r), () => {});
     expect(r2).toEqual({ action: "allow" });
 
-    // (d) PLANNER가 Status를 TODO_READY로 바꾸고 Stop → allow + notify todo-ready-v1 + pendingAction todo.
+    // (d) PLANNER가 Status를 TODO_READY로 바꾸고 Stop → allow + notify notodo-v1 (todo 파일 없음) + pendingAction null.
     fs.writeFileSync(path.join(taskDir2, "plan-v1.md"), "Status: TODO_READY\n");
     let r3: Reply | null = null;
     env2.orchestrator.handleStop("planner-1", { session_id: "p1" }, (r) => (r3 = r), () => {});
     expect(r3).toEqual({ action: "allow" });
-    expect(store2.readEvents().some((e) => e.type === "notify" && e.key === "todo-ready-v1")).toBe(true);
-    expect(env2.orchestrator.pendingAction()).toEqual({ kind: "todo" });
+    expect(store2.readEvents().some((e) => e.type === "notify" && e.key === "notodo-v1")).toBe(true);
+    expect(env2.orchestrator.pendingAction()).toBeNull();
 
     env.cleanup();
     env2.cleanup();
+  });
+
+  it("M2 — todo 루프: TODO_READY → hold+launch(coder) → REVISE → PLANNER block → todo-v2 → CODER block → PASS·DONE → coder allow + done-v1 + planner allow", () => {
+    const env = setup();
+    const { orchestrator, store, sessions, taskDir, folder } = env;
+
+    // bound 작업 + PLANNER(idle). CODER는 아직 배정 없음.
+    store.state.activeTask = {
+      ...newActiveTask("EWE", Date.now()),
+      folder,
+      assigned: { planner: "planner-1", verifier: null, coder: null },
+    };
+    store.state.sessions["planner-1"] = {
+      role: "planner",
+      project: "EWE",
+      folder,
+      launchedAt: 0,
+      sessionIds: ["p1"],
+      activeSessionId: "p1",
+      switchedOnce: false,
+    };
+    sessions.register("planner-1", "idle");
+    fs.mkdirSync(taskDir, { recursive: true });
+    fs.writeFileSync(path.join(taskDir, "plan-v1.md"), "Status: TODO_READY\n");
+    fs.writeFileSync(path.join(taskDir, "todo-v1.md"), "- [ ] T1\n");
+
+    // Step 1 — PLANNER Stop (TODO_READY, todo-v1 있음·verify 없음) → hold + launch(coder, folder 전달).
+    let replyP1: Reply | null = null;
+    orchestrator.handleStop("planner-1", { session_id: "p1" }, (r) => (replyP1 = r), () => {});
+    expect(sessions.stateOf("planner-1")).toBe("parked"); // hold — reply 아직 방출 안 됨
+    const coderKey = Object.keys(store.state.sessions).find((k) => store.state.sessions[k].role === "coder")!;
+    expect(coderKey).toBeDefined();
+    expect(store.state.sessions[coderKey].folder).toBe(folder);
+    expect(sessions.stateOf(coderKey)).toBe("working");
+    const lastLaunch = env.launchCalls[env.launchCalls.length - 1];
+    expect(lastLaunch.role).toBe("coder");
+    expect(lastLaunch.folder).toBe(folder);
+
+    // Step 2 — CODER가 todo-v1-verify.md(REVISE) 쓰고 Stop → c3: hold(coder) + PLANNER에 block(instructionTodoRevise(1)).
+    fs.writeFileSync(path.join(taskDir, "todo-v1-verify.md"), "# verify\n\n판정: REVISE\n");
+    let replyC1: Reply | null = null;
+    orchestrator.handleStop(coderKey, { session_id: "c1" }, (r) => (replyC1 = r), () => {});
+    expect(sessions.stateOf(coderKey)).toBe("parked"); // hold
+    expect(replyP1).toEqual({ action: "block", reason: instructionTodoRevise(1) });
+    expect(sessions.stateOf("planner-1")).toBe("working");
+
+    // Step 3 — PLANNER가 todo-v2.md 쓰고 Stop → 행 5t(b): hold + CODER에 block(instructionReviewTodo(2)).
+    fs.writeFileSync(path.join(taskDir, "todo-v2.md"), "- [ ] T1\n");
+    let replyP2: Reply | null = null;
+    orchestrator.handleStop("planner-1", { session_id: "p1" }, (r) => (replyP2 = r), () => {});
+    expect(sessions.stateOf("planner-1")).toBe("parked"); // hold
+    expect(replyC1).toEqual({ action: "block", reason: instructionReviewTodo(2) });
+    expect(sessions.stateOf(coderKey)).toBe("working");
+
+    // Step 4 — CODER가 todo-v2-verify.md(PASS)·plan-v1 DONE 쓰고 Stop → c9: coder allow + done-v1 알림 + planner allow.
+    fs.writeFileSync(path.join(taskDir, "todo-v2-verify.md"), "# verify\n\n판정: PASS\n");
+    fs.writeFileSync(path.join(taskDir, "plan-v1.md"), "Status: DONE\n");
+    let replyC2: Reply | null = null;
+    orchestrator.handleStop(coderKey, { session_id: "c1" }, (r) => (replyC2 = r), () => {});
+    expect(replyC2).toEqual({ action: "allow" });
+    expect(sessions.stateOf(coderKey)).toBe("idle");
+    expect(store.readEvents().some((e) => e.type === "notify" && e.key === "done-v1")).toBe(true);
+    expect(replyP2).toEqual({ action: "allow" }); // planner가 hold 중이므로 allow로 방출
+    expect(sessions.stateOf("planner-1")).toBe("idle");
+
+    env.cleanup();
   });
 
   it("W6 — 작업 A 기록이 B로 이어지지 않음: pass-v1·todo 지시 다시 나옴, A의 undelivered는 B의 pendingAction에 없음", () => {
@@ -560,7 +769,7 @@ describe("T10 시나리오 (W1·W4·W5·W6)", () => {
     store.state.activeTask = {
       ...newActiveTask("EWE", Date.now()),
       folder,
-      assigned: { planner: "planner-1", verifier: "verifier-1" },
+      assigned: { planner: "planner-1", verifier: "verifier-1", coder: null },
     };
     store.state.sessions["planner-1"] = {
       role: "planner",
@@ -660,7 +869,7 @@ describe("T7 — 표시 상태 (assignedDisplay)", () => {
     store.state.activeTask = {
       ...newActiveTask("EWE", Date.now()),
       folder: "261111-alpha",
-      assigned: { planner: "planner-1", verifier: null },
+      assigned: { planner: "planner-1", verifier: null, coder: null },
     };
     // planner-1 미등록 → stateOf undefined → detached → disconnected.
     expect(orchestrator.getState().assignedDisplay.planner).toBe("disconnected");
@@ -673,7 +882,7 @@ describe("T7 — 표시 상태 (assignedDisplay)", () => {
     store.state.activeTask = {
       ...newActiveTask("EWE", Date.now()),
       folder: "261111-alpha",
-      assigned: { planner: "planner-1", verifier: null },
+      assigned: { planner: "planner-1", verifier: null, coder: null },
     };
     sessions.register("planner-1", "working");
     expect(orchestrator.getState().assignedDisplay.planner).toBe("working");
@@ -686,7 +895,7 @@ describe("T7 — 표시 상태 (assignedDisplay)", () => {
     store.state.activeTask = {
       ...newActiveTask("EWE", Date.now()),
       folder: "261111-alpha",
-      assigned: { planner: "planner-1", verifier: null },
+      assigned: { planner: "planner-1", verifier: null, coder: null },
     };
     sessions.register("planner-1", "parked");
     expect(orchestrator.getState().assignedDisplay.planner).toBe("waiting");
@@ -699,7 +908,7 @@ describe("T7 — 표시 상태 (assignedDisplay)", () => {
     store.state.activeTask = {
       ...newActiveTask("EWE", Date.now()),
       folder: null,
-      assigned: { planner: "planner-1", verifier: null },
+      assigned: { planner: "planner-1", verifier: null, coder: null },
     };
     sessions.register("planner-1", "unbound");
     expect(orchestrator.getState().assignedDisplay.planner).toBe("your-turn");
@@ -712,7 +921,7 @@ describe("T7 — 표시 상태 (assignedDisplay)", () => {
     store.state.activeTask = {
       ...newActiveTask("EWE", Date.now()),
       folder: "261111-alpha",
-      assigned: { planner: "planner-1", verifier: null },
+      assigned: { planner: "planner-1", verifier: null, coder: null },
     };
     sessions.register("planner-1", "idle");
     fs.mkdirSync(taskDir, { recursive: true });
@@ -727,7 +936,7 @@ describe("T7 — 표시 상태 (assignedDisplay)", () => {
     store.state.activeTask = {
       ...newActiveTask("EWE", Date.now()),
       folder: "261111-alpha",
-      assigned: { planner: "planner-1", verifier: "verifier-1" },
+      assigned: { planner: "planner-1", verifier: "verifier-1", coder: null },
     };
     sessions.register("planner-1", "idle");
     sessions.register("verifier-1", "idle");
@@ -745,12 +954,160 @@ describe("T7 — 표시 상태 (assignedDisplay)", () => {
     store.state.activeTask = {
       ...newActiveTask("EWE", Date.now()),
       folder: "261111-alpha",
-      assigned: { planner: "planner-1", verifier: "verifier-1" },
+      assigned: { planner: "planner-1", verifier: "verifier-1", coder: null },
       undelivered: [{ role: "verifier", text: "지시 문장" }], // pendingAction → deliver(verifier)
     };
     sessions.register("planner-1", "idle");
     sessions.register("verifier-1", "idle");
     expect(orchestrator.getState().assignedDisplay.verifier).toBe("your-turn");
     env.cleanup();
+  });
+});
+
+describe("T5 — pendingAction (todo-gate·coder·done)", () => {
+  it("TODO_READY + todo-v5-verify REVISE·todo-v6 없음 → { kind: 'todo-gate', n: 5 }", () => {
+    const env = setup();
+    const { orchestrator, store, taskDir } = env;
+    store.state.activeTask = {
+      ...newActiveTask("EWE", Date.now()),
+      folder: "261111-alpha",
+      assigned: { planner: "planner-1", verifier: null, coder: null },
+    };
+    fs.mkdirSync(taskDir, { recursive: true });
+    fs.writeFileSync(path.join(taskDir, "plan-v1.md"), "Status: TODO_READY\n");
+    fs.writeFileSync(path.join(taskDir, "todo-v5.md"), "- [ ] T1\n");
+    fs.writeFileSync(path.join(taskDir, "todo-v5-verify.md"), "# verify\n\n판정: REVISE\n");
+    expect(orchestrator.pendingAction()).toEqual({ kind: "todo-gate", n: 5 });
+    env.cleanup();
+  });
+
+  it("todo-v6 존재 → null (다음 버전이 이미 시작됨)", () => {
+    const env = setup();
+    const { orchestrator, store, taskDir } = env;
+    store.state.activeTask = {
+      ...newActiveTask("EWE", Date.now()),
+      folder: "261111-alpha",
+      assigned: { planner: "planner-1", verifier: null, coder: null },
+    };
+    fs.mkdirSync(taskDir, { recursive: true });
+    fs.writeFileSync(path.join(taskDir, "plan-v1.md"), "Status: TODO_READY\n");
+    fs.writeFileSync(path.join(taskDir, "todo-v5.md"), "- [ ] T1\n");
+    fs.writeFileSync(path.join(taskDir, "todo-v5-verify.md"), "# verify\n\n판정: REVISE\n");
+    fs.writeFileSync(path.join(taskDir, "todo-v6.md"), "- [ ] T1\n");
+    expect(orchestrator.pendingAction()).toBeNull();
+    env.cleanup();
+  });
+
+  it("IN_PROGRESS + coder idle → { kind: 'coder' }", () => {
+    const env = setup();
+    const { orchestrator, store, sessions, taskDir } = env;
+    store.state.activeTask = {
+      ...newActiveTask("EWE", Date.now()),
+      folder: "261111-alpha",
+      assigned: { planner: "planner-1", verifier: null, coder: "coder-1" },
+    };
+    sessions.register("coder-1", "idle");
+    fs.mkdirSync(taskDir, { recursive: true });
+    fs.writeFileSync(path.join(taskDir, "plan-v1.md"), "Status: IN_PROGRESS\n");
+    expect(orchestrator.pendingAction()).toEqual({ kind: "coder" });
+    env.cleanup();
+  });
+
+  it("IN_PROGRESS + coder working → null", () => {
+    const env = setup();
+    const { orchestrator, store, sessions, taskDir } = env;
+    store.state.activeTask = {
+      ...newActiveTask("EWE", Date.now()),
+      folder: "261111-alpha",
+      assigned: { planner: "planner-1", verifier: null, coder: "coder-1" },
+    };
+    sessions.register("coder-1", "working");
+    fs.mkdirSync(taskDir, { recursive: true });
+    fs.writeFileSync(path.join(taskDir, "plan-v1.md"), "Status: IN_PROGRESS\n");
+    expect(orchestrator.pendingAction()).toBeNull();
+    env.cleanup();
+  });
+
+  it("DONE → { kind: 'done' }", () => {
+    const env = setup();
+    const { orchestrator, store, taskDir } = env;
+    store.state.activeTask = {
+      ...newActiveTask("EWE", Date.now()),
+      folder: "261111-alpha",
+      assigned: { planner: "planner-1", verifier: null, coder: null },
+    };
+    fs.mkdirSync(taskDir, { recursive: true });
+    fs.writeFileSync(path.join(taskDir, "plan-v1.md"), "Status: DONE\n");
+    expect(orchestrator.pendingAction()).toEqual({ kind: "done" });
+    env.cleanup();
+  });
+
+  it("assignedDisplay.coder — IN_PROGRESS + coder idle → your-turn", () => {
+    const env = setup();
+    const { orchestrator, store, sessions, taskDir } = env;
+    store.state.activeTask = {
+      ...newActiveTask("EWE", Date.now()),
+      folder: "261111-alpha",
+      assigned: { planner: "planner-1", verifier: null, coder: "coder-1" },
+    };
+    sessions.register("coder-1", "idle");
+    fs.mkdirSync(taskDir, { recursive: true });
+    fs.writeFileSync(path.join(taskDir, "plan-v1.md"), "Status: IN_PROGRESS\n");
+    expect(orchestrator.getState().assignedDisplay.coder).toBe("your-turn");
+    env.cleanup();
+  });
+
+  it("DONE + planner idle → planner idle (done은 대상 없음)", () => {
+    const env = setup();
+    const { orchestrator, store, sessions, taskDir } = env;
+    store.state.activeTask = {
+      ...newActiveTask("EWE", Date.now()),
+      folder: "261111-alpha",
+      assigned: { planner: "planner-1", verifier: null, coder: null },
+    };
+    sessions.register("planner-1", "idle");
+    fs.mkdirSync(taskDir, { recursive: true });
+    fs.writeFileSync(path.join(taskDir, "plan-v1.md"), "Status: DONE\n");
+    const st = orchestrator.getState();
+    expect(st.pendingAction).toEqual({ kind: "done" });
+    expect(st.assignedDisplay.planner).toBe("idle");
+    env.cleanup();
+  });
+});
+
+describe("T8 — Windows 토스트", () => {
+  it("warn → 토스트, pass-v1 info → 없음, undeliverable·done info → 있음", () => {
+    const env = setup();
+    const { orchestrator, toasts } = env;
+
+    orchestrator.emitNotify("gate-v5", "warn", "x");
+    expect(toasts).toEqual(["x"]);
+
+    orchestrator.emitNotify("pass-v1", "info", "y");
+    expect(toasts).toEqual(["x"]);
+
+    orchestrator.emitNotify("undeliverable-planner", "info", "z");
+    orchestrator.emitNotify("done-v1", "info", "w");
+    expect(toasts).toEqual(["x", "z", "w"]);
+
+    env.cleanup();
+  });
+
+  it("config.toast = false → warn도 토스트 없음", () => {
+    const env = setup();
+    const { orchestrator, toasts } = env;
+    env.config.toast = false;
+    orchestrator.emitNotify("gate-v5", "warn", "x");
+    expect(toasts).toEqual([]);
+    env.cleanup();
+  });
+});
+
+describe("shouldToast", () => {
+  it("warn → true, pass-v1 info → false, undeliverable-·done- info → true", () => {
+    expect(shouldToast("warn", "gate-v5")).toBe(true);
+    expect(shouldToast("info", "pass-v1")).toBe(false);
+    expect(shouldToast("info", "undeliverable-planner")).toBe(true);
+    expect(shouldToast("info", "done-v1")).toBe(true);
   });
 });

@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, it, expect } from "vitest";
-import { readSnapshot, findNewPlanV1 } from "./artifacts.js";
+import { readSnapshot, readTodoSnapshot, findNewPlanV1 } from "./artifacts.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url)); // server/src
 const fixtures = path.join(here, "..", "test", "fixtures"); // server/test/fixtures
@@ -77,6 +77,43 @@ describe("readSnapshot", () => {
     expect(readSnapshot(path.join(fixtures, "version-skip"))).toEqual({
       latestN: 4,
       status: "TODO_READY",
+      verifyExists: false,
+      verdict: null,
+    });
+  });
+});
+
+describe("readTodoSnapshot", () => {
+  it("todo 없음 — latestN null", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "aism-todo-"));
+    fs.writeFileSync(path.join(dir, "plan-v1.md"), "Status: DRAFT\n");
+    expect(readTodoSnapshot(dir)).toEqual({ latestN: null, verifyExists: false, verdict: null });
+  });
+
+  it("todo-v1·v2 + checklist·notes — 최신 T=2, verify 없음", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "aism-todo-"));
+    for (const name of ["todo-v1.md", "todo-v2.md", "todo-v1-checklist.md", "todo-v1-notes.md"]) {
+      fs.writeFileSync(path.join(dir, name), "x\n");
+    }
+    expect(readTodoSnapshot(dir)).toEqual({ latestN: 2, verifyExists: false, verdict: null });
+  });
+
+  it("verify 마지막 줄 — PASS / REVISE / 오타(MALFORMED)", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "aism-todo-"));
+    fs.writeFileSync(path.join(dir, "todo-v1.md"), "x\n");
+    fs.writeFileSync(path.join(dir, "todo-v1-verify.md"), "내용\n판정: PASS\n");
+    expect(readTodoSnapshot(dir)).toEqual({ latestN: 1, verifyExists: true, verdict: "PASS" });
+
+    fs.writeFileSync(path.join(dir, "todo-v1-verify.md"), "내용\n판정: REVISE\n");
+    expect(readTodoSnapshot(dir)).toEqual({ latestN: 1, verifyExists: true, verdict: "REVISE" });
+
+    fs.writeFileSync(path.join(dir, "todo-v1-verify.md"), "내용\n판정: 통과\n");
+    expect(readTodoSnapshot(dir)).toEqual({ latestN: 1, verifyExists: true, verdict: "MALFORMED" });
+  });
+
+  it("폴더가 없으면 null", () => {
+    expect(readTodoSnapshot(path.join(os.tmpdir(), "aism-no-such-dir-xyz"))).toEqual({
+      latestN: null,
       verifyExists: false,
       verdict: null,
     });
