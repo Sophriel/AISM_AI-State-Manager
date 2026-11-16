@@ -70,7 +70,7 @@ The orchestrator notifies the user, who will discuss it with you in this same se
 
 ## Session start (all roles)
 
-1. If the first message is `AISM task: <folder>`, that folder under the plans root is your task (sent by the AISM orchestrator). Otherwise, if the user did not name the task, list the plans root and ask which one — or, for PLANNER, wait for the user to describe a new task. Do not guess.
+1. If the first message is `AISM task: <folder>`, that folder under the plans root is your task (sent by the AISM orchestrator). If the first message is `AISM resume: <folder>`, you are continuing your earlier conversation in a new window: re-read the latest files of that folder and continue your role's next step; do not start over. Otherwise, if the user did not name the task, list the plans root and ask which one — or, for PLANNER, wait for the user to describe a new task. Do not guess.
 2. Find the latest plan and verify files and read only what your role needs. Do not re-explore the whole codebase.
 3. In 3-5 lines, tell the user: task folder, latest plan version, Status, what you are going to do now.
 

@@ -23,6 +23,8 @@ npm run build
 
 업그레이드할 때는 먼저 UI에서 작업을 종료하세요. 현재 형식과 다른 state.json은 무시되어(플랜 파일은 대상 레포에 그대로 남음) 진행 중이던 작업의 배정·알림 기록이 사라집니다. 설정 파일이 현재 형식과 다르면 서버가 고칠 항목을 알려 주니 aism.config.example.json에 맞춰 고치세요.
 
+M2부터 설정에 `roles.coder`(필수)와 선택 키 `toast`가 있습니다 — aism.config.example.json을 참고해 추가하세요. Windows 토스트는 Windows PowerShell 5.1(`powershell.exe`)로 띄웁니다.
+
 ## 실행
 
 ```bat

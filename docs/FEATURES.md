@@ -5,8 +5,8 @@
 
 ## 마일스톤
 
-- **M1 — PLANNER⇄VERIFIER 루프** (plan 승인, 구현 예정 — `.claude/plans/261111-m1-plan-verify-loop/`): 지금 손으로 하던 왕복을 자동화. 범위: R-1~R-5, R-8, W-2~W-4, W-7, W-10, S-1, S-2, S-4, S-5, S-7, S-8, G-1, G-2, G-5(브라우저 알림). 활성 작업 1개. 종료 조건: PASS 후 PLANNER가 todo를 작성해 TODO_READY가 되면 알리고 멈춤.
-- **M2 — todo 검증 → CODER**: W-5, W-6, W-8, S-9(`--resume`), G-5 Windows 토스트.
+- **M1 — PLANNER⇄VERIFIER 루프** (완료 — `.claude/plans/261111-m1-plan-verify-loop/`, 다듬기 `261114-m1-polish`, `261114-detach-handling`): 지금 손으로 하던 왕복을 자동화. 범위: R-1~R-5, R-8, W-2~W-4, W-7, W-10, S-1, S-2, S-4, S-5, S-7, S-8, G-1, G-2, G-5(브라우저 알림). 활성 작업 1개. 종료 조건: PASS 후 PLANNER가 todo를 작성해 TODO_READY가 되면 알리고 멈춤.
+- **M2 — todo 검증 → CODER**: W-5, W-6, W-8, S-9(`--resume`), G-5 Windows 토스트 (`.claude/plans/261114-m2-coder-loop/`).
 - **M3 — 편의 기능**: W-1(워크플로우 정의 파일), 나머지 P1/P2.
 
 ## 1. 역할 (Role)
@@ -30,10 +30,10 @@
 | W-2 | 전이 조건을 산출물 파일로 판정 (최신 plan-vN.md `Status`, plan-vN-verify.md `판정`) — ADR 0006 | P0 | 확정 |
 | W-3 | 조건 분기 + 되돌림 루프 (REVISE → PLANNER) | P0 | 제안 |
 | W-4 | 루프 게이트: plan-v5-verify까지 자동, 이후 REVISE마다 사용자 확인 후 진행. 횟수 = 최신 plan 버전 N | P0 | 확정 |
-| W-5 | todo 검증 루프: PLANNER의 todo-vN ⇄ CODER의 todo-vN-verify, PASS 시 CODER 착수 | P0 | 확정 (M2) |
-| W-6 | BLOCKED 처리: 알림 후 정지, 또는 지정 단계로 되돌림 | P0 | 제안 |
+| W-5 | todo 검증 루프: PLANNER의 todo-vN ⇄ CODER의 todo-vN-verify, PASS 시 CODER 착수 | P0 | 완료 (M2) |
+| W-6 | BLOCKED 처리: 알림 후 정지, 또는 지정 단계로 되돌림 | P0 | 완료 (M2) |
 | W-7 | 상태 영속화 + 재시작 후 재개 | P0 | 제안 |
-| W-8 | 기본 워크플로우 템플릿: 3세션 (PLANNER/VERIFIER/CODER) | P0 | 제안 |
+| W-8 | 기본 워크플로우 템플릿: 3세션 (PLANNER/VERIFIER/CODER) | P0 | 완료 (M2) |
 | W-9 | 여러 워크플로우 정의 (bugfix, refactor 등) | P2 | 제안 |
 | W-10 | `NEEDS_DECISION` 상태: 사람 결정이 필요하면 멈추고 알림. 사용자가 해당 세션 창에서 직접 논의 후 재개 | P0 | 제안 |
 
@@ -48,7 +48,7 @@
 | S-5 | 살아 있는 세션에 후속 지시 보내기 (예: "plan-verify 반영해") — Stop 훅 `block` + `reason`으로 전달. 키 입력 흉내는 쓰지 않음 | P0 | 제안 (E-001 1차 검증) |
 | S-7 | **Stop 훅 체크포인트**: 매 응답 종료마다 훅이 서버에 질의 → 서버가 파일을 보고 "멈춤 허용 / 계속+지시 / 대기" 중 하나로 응답 | P0 | 제안 (E-001 1차 검증) |
 | S-8 | **세션 파킹**: 상대 세션이 일하는 동안 Stop 훅 안에서 대기, 지시가 생기면 풀어줌 | P0 | 제안 (E-001 1차 검증) |
-| S-9 | 파킹 대안: 세션을 멈추게 두고 `claude --resume <session_id> "지시"`로 새 창에서 이어 붙이기 — 지금은 끊긴 세션에 알림 + 다시 띄우기로 대응(ADR 0011) | P1 | 제안 |
+| S-9 | 파킹 대안: 세션을 멈추게 두고 `claude --resume <session_id> "지시"`로 새 창에서 이어 붙이기 — 끊긴 세션은 이어서 띄우기 또는 다시 띄우기(ADR 0011, 0013) | P1 | 완료 (M2) |
 | S-6 | 헤드리스 모드 (`claude -p`) 선택 실행 | P2 | 제안 |
 
 ## 4. GUI
@@ -59,7 +59,7 @@
 | G-2 | 버튼: 시작 / 다음 단계 승인 / 정지 / 특정 단계부터 재개 | P0 | 제안 |
 | G-3 | 작업 상세: plan-vN / verify / todo / code-log 보기, 버전 간 비교 | P1 | 제안 |
 | G-4 | 단계 이력 타임라인 (언제 어느 역할이 무엇을 남겼나) | P1 | 제안 |
-| G-5 | 알림 (NEEDS_DECISION, 게이트 도달, BLOCKED, 완료) — Windows 토스트 + 웹 UI | P0 | 제안 |
+| G-5 | 알림 (NEEDS_DECISION, 게이트 도달, BLOCKED, 완료) — Windows 토스트 + 웹 UI | P0 | 완료 (M2) |
 | G-6 | git diff 보기 (CODER 단계 결과) | P2 | 제안 |
 
 ## 5. 기타
