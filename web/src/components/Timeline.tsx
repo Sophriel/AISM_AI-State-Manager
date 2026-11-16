@@ -5,15 +5,17 @@ function str(v: unknown): string {
   return v == null ? "" : String(v);
 }
 
-// 역할 표시 — e.role이 planner/verifier면 해당 표시, 그 밖의 문자열은 대문자, 없으면 sessionKey 접두사(planner-/verifier-)로, 둘 다 아니면 ?.
+// 역할 표시 — e.role이 planner/verifier/coder면 해당 표시, 그 밖의 문자열은 대문자, 없으면 sessionKey 접두사(planner-/verifier-/coder-)로, 둘 다 아니면 ?.
 function roleOf(e: AismEvent): string {
   const role = e.role;
   if (role === "planner") return "PLANNER";
   if (role === "verifier") return "VERIFIER";
+  if (role === "coder") return "CODER";
   if (typeof role === "string") return role.toUpperCase();
   const key = str(e.sessionKey);
   if (key.startsWith("planner-")) return "PLANNER";
   if (key.startsWith("verifier-")) return "VERIFIER";
+  if (key.startsWith("coder-")) return "CODER";
   return "?";
 }
 
@@ -43,7 +45,7 @@ function describeEvent(e: AismEvent): string {
     case "hold":
       return `${t}  ${roleOf(e)} 대기`;
     case "launch": {
-      const suffix = e.relaunch ? " (다시 띄움)" : "";
+      const suffix = e.resume ? " (이어서 띄움)" : e.relaunch ? " (다시 띄움)" : "";
       return `${t}  Launch  ${roleOf(e)}${suffix}`;
     }
     case "bind":

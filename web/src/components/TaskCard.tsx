@@ -29,8 +29,12 @@ function pendingActionText(pa: PendingAction): string {
       return `계속 개정하려면 PLANNER 창에서 지시하세요 (v${pa.n})`;
     case "pass":
       return pa.text;
-    case "todo":
-      return "todo 작성 완료 — CODER 세션에서 진행하세요";
+    case "todo-gate":
+      return `계속 개정하려면 PLANNER 창에서 지시하세요 (todo-v${pa.n})`;
+    case "coder":
+      return "CODER가 멈췄습니다 — CODER 창을 확인하세요";
+    case "done":
+      return "구현 완료 — 테스트 후 작업을 종료하세요";
     case "describe":
       return "PLANNER 창에서 작업을 설명하세요";
   }
@@ -50,9 +54,10 @@ interface Props {
   state: State | null;
   planDisplay: Display | null;
   verifyDisplay: Display | null;
+  coderDisplay: Display | null;
 }
 
-function TaskCard({ state, planDisplay, verifyDisplay }: Props) {
+function TaskCard({ state, planDisplay, verifyDisplay, coderDisplay }: Props) {
   const task = state?.activeTask ?? null;
   const snap = state?.snapshot ?? null;
   const pa = state?.pendingAction ?? null;
@@ -75,11 +80,21 @@ function TaskCard({ state, planDisplay, verifyDisplay }: Props) {
           {snap?.verdict ?? "—"}
         </span>
       </div>
+      <div className="task-row">
+        <span className="label">Todo</span>
+        <span className="value">{state?.todo?.latestN != null ? `v${state.todo.latestN}` : "—"}</span>
+        <span className="label">판정</span>
+        <span className={`value verdict-${(state?.todo?.verdict ?? "none").toLowerCase()}`}>
+          {state?.todo?.verdict ?? "—"}
+        </span>
+      </div>
       <div className="task-row sessions">
         <span className="label">PLANNER</span>
         <Badge display={planDisplay} />
         <span className="label">VERIFIER</span>
         <Badge display={verifyDisplay} />
+        <span className="label">CODER</span>
+        <Badge display={coderDisplay} />
       </div>
       {pa && (
         <div className="pending-action">
@@ -95,11 +110,14 @@ function TaskCard({ state, planDisplay, verifyDisplay }: Props) {
           )}
         </div>
       )}
-      {pa && pa.kind === "deliver" && (pa.role === "planner" ? planDisplay : verifyDisplay) === "disconnected" && (
-        <div className="pending-hint">
-          창을 닫았다면 '{pa.role === "planner" ? "PLANNER" : "VERIFIER"} 다시 띄우기'를 누르세요
-        </div>
-      )}
+      {pa && pa.kind === "deliver" &&
+        (pa.role === "planner" ? planDisplay : pa.role === "verifier" ? verifyDisplay : coderDisplay) ===
+          "disconnected" && (
+          <div className="pending-hint">
+            창을 닫았다면 '{pa.role.toUpperCase()} 이어서 띄우기'(같은 대화) 또는 '{pa.role.toUpperCase()} 다시
+            띄우기'(새 대화)를 누르세요
+          </div>
+        )}
     </div>
   );
 }

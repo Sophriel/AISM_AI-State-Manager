@@ -1,5 +1,5 @@
 // T13 — 서버 API 클라이언트. 타입 정의 + fetch 래퍼.
-export type Role = "planner" | "verifier";
+export type Role = "planner" | "verifier" | "coder";
 
 export type SessionState =
   | "unbound"
@@ -28,11 +28,17 @@ export interface Snapshot {
   verdict: "PASS" | "REVISE" | "MALFORMED" | null;
 }
 
+export interface TodoSnapshot {
+  latestN: number | null;
+  verifyExists: boolean;
+  verdict: "PASS" | "REVISE" | "MALFORMED" | null;
+}
+
 export interface ActiveTask {
   project: string;
   folder: string | null;
   startedAt: number;
-  assigned: { planner: string | null; verifier: string | null };
+  assigned: { planner: string | null; verifier: string | null; coder: string | null };
 }
 
 export type PendingAction =
@@ -40,12 +46,15 @@ export type PendingAction =
   | { kind: "decision" }
   | { kind: "gate"; n: number }
   | { kind: "pass"; n: number; text: string }
-  | { kind: "todo" }
+  | { kind: "todo-gate"; n: number }
+  | { kind: "coder" }
+  | { kind: "done" }
   | { kind: "describe" };
 
 export interface SessionView {
   role: Role;
   state: SessionState;
+  resumable: boolean;
 }
 
 // 서버 이벤트 (state/events.jsonl 한 줄). 타입: stop/reply/hold/launch/bind/notify/detach/close-task.
@@ -57,9 +66,10 @@ export interface AismEvent {
 
 export interface State {
   activeTask: ActiveTask | null;
-  assignedState: { planner: SessionState | null; verifier: SessionState | null };
-  assignedDisplay: { planner: Display | null; verifier: Display | null };
+  assignedState: { planner: SessionState | null; verifier: SessionState | null; coder: SessionState | null };
+  assignedDisplay: { planner: Display | null; verifier: Display | null; coder: Display | null };
   snapshot: Snapshot | null;
+  todo: TodoSnapshot | null;
   sessions: Record<string, SessionView>;
   projects: string[];
   pendingAction: PendingAction | null;
@@ -102,8 +112,8 @@ export function newTask(project: string): Promise<void> {
   return postJson("/api/tasks/new", { project });
 }
 
-export function relaunch(role: Role): Promise<void> {
-  return postJson("/api/tasks/relaunch", { role });
+export function relaunch(role: Role, mode: "new" | "resume" = "new"): Promise<void> {
+  return postJson("/api/tasks/relaunch", { role, mode });
 }
 
 export function closeTask(): Promise<void> {

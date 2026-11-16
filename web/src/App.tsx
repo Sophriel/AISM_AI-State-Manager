@@ -1,5 +1,5 @@
 // T13 — 웹 UI. 첫 로드 GET /api/state, 이후 EventSource('/api/events')로 갱신.
-import { useCallback, useEffect, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import {
   closeTask,
   fetchState,
@@ -17,12 +17,25 @@ import "./App.css";
 function canRelaunch(state: State | null, role: Role): boolean {
   const task = state?.activeTask;
   if (!task) return false;
-  if (role === "verifier" && task.folder === null) return false;
+  if ((role === "verifier" || role === "coder") && task.folder === null) return false;
   const s = state.assignedState[role];
   if (s === null || s === "detached" || s === "idle") return true;
   if (role === "planner" && task.folder === null && s === "unbound") return true;
   return false;
 }
+
+// 이어서 띄우기 — 서버 조건과 같음 (S-9).
+function canResume(state: State | null, role: Role): boolean {
+  const task = state?.activeTask;
+  if (!task || task.folder === null) return false;
+  const key = task.assigned[role];
+  if (!key) return false;
+  const s = state.assignedState[role];
+  if (s !== "detached" && s !== "idle") return false;
+  return state.sessions[key]?.resumable === true;
+}
+const ROLES = ["planner", "verifier", "coder"] as const;
+const ROLE_LABEL: Record<Role, string> = { planner: "PLANNER", verifier: "VERIFIER", coder: "CODER" };
 
 function App() {
   const [state, setState] = useState<State | null>(null);
@@ -119,7 +132,7 @@ function App() {
     if (!project) return;
     void run(() => newTask(project));
   };
-  const handleRelaunch = (role: Role) => {
+  const handleRelaunch = (role: Role, mode: "new" | "resume") => {
     const s = state?.assignedState?.[role];
     if (
       (s === "idle" || s === "unbound") &&
@@ -128,7 +141,7 @@ function App() {
       )
     )
       return;
-    void run(() => relaunch(role));
+    void run(() => relaunch(role, mode));
   };
   const handleClose = () => {
     if (!window.confirm("작업을 종료할까요? 모든 대기 중인 세션이 allow로 해제됩니다.")) return;
@@ -139,8 +152,6 @@ function App() {
   const projects = state?.projects ?? [];
 
   const selectValue = activeTask ? activeTask.project : project;
-  const planDisabled = busy || !canRelaunch(state, "planner");
-  const verifyDisabled = busy || !canRelaunch(state, "verifier");
 
   return (
     <div className="app" onClick={requestPermission}>
@@ -153,6 +164,7 @@ function App() {
         state={state}
         planDisplay={state ? state.assignedDisplay.planner : null}
         verifyDisplay={state ? state.assignedDisplay.verifier : null}
+        coderDisplay={state ? state.assignedDisplay.coder : null}
       />
 
       <div className="controls">
@@ -173,12 +185,16 @@ function App() {
             새 작업
           </button>
         </div>
-        <button type="button" onClick={() => handleRelaunch("planner")} disabled={planDisabled}>
-          PLANNER 다시 띄우기
-        </button>
-        <button type="button" onClick={() => handleRelaunch("verifier")} disabled={verifyDisabled}>
-          VERIFIER 다시 띄우기
-        </button>
+        {ROLES.map((r) => (
+          <Fragment key={r}>
+            <button type="button" onClick={() => handleRelaunch(r, "new")} disabled={busy || !canRelaunch(state, r)}>
+              {ROLE_LABEL[r]} 다시 띄우기
+            </button>
+            <button type="button" onClick={() => handleRelaunch(r, "resume")} disabled={busy || !canResume(state, r)}>
+              {ROLE_LABEL[r]} 이어서 띄우기
+            </button>
+          </Fragment>
+        ))}
         <button type="button" onClick={handleClose} disabled={busy || !activeTask}>
           작업 종료
         </button>
