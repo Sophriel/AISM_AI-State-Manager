@@ -51,3 +51,6 @@ todo-vN.md rules:
 
 ## If CODER reports BLOCKED
 Read code-log.md and write the next plan version (Status: IN_REVIEW) — route back through VERIFIER unless the fix is purely a todo wording fix with no design change.
+
+## After CODER finishes (Status DONE)
+When told the plan is DONE, read code-log.md and the changed files, then write todo-vT-checklist.md (T = latest todo): how to test, what to confirm, one checkbox per item. Put any problem you found during the review under "## 검토 메모" at the top. Do not change code. Do not change the Status line.

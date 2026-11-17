@@ -8,6 +8,8 @@
 | E-001 | Stop 훅 안에서 세션을 파킹했다가 외부에서 지시를 넣을 수 있나 | ✅ 가능 | 2026-11-11 |
 | E-002 | wt.exe 실행·long-poll 끊김 감지·훅 병합·공백 경로 인자 | ✅ 모두 통과 (발견 사항 F-1~F-6) | 2026-11-11 |
 | E-003 | `--append-system-prompt-file` 역할이 압축 후에도 유지되나 | ✅ 유지 | 2026-11-11 |
+| E-004 | `--resume`으로 같은 대화를 새 창에 이어 붙일 수 있나 (역할 프롬프트·Stop 훅·session_id) | ✅ 가능 — session_id 유지 | 2026-11-16 |
+| E-005 | 서버에서 PowerShell WinRT 토스트를 띄울 수 있나 | ✅ 가능 — 단 detached로 띄우면 표시 안 됨 | 2026-11-16 |
 
 ---
 
@@ -59,3 +61,31 @@
 | 압축 후 역할 (`--resume`에 플래그 없음) | ✅ 답했으나 요약에 의존한 것으로 보여 보장되지 않음 |
 
 **결론** — 대화형 세션은 프로세스가 사는 동안 시스템 프롬프트가 고정이라 유지된다. `--resume`(S-9)으로 이어 붙일 때는 플래그를 반드시 다시 넘긴다.
+
+## E-004. 이어서 띄우기
+
+`--resume <session_id>`로 같은 대화를 새 창에 이어 붙인 것을 확인 (`.claude/plans/261114-m2-coder-loop/todo-v1-notes.md` E-004 절 요약).
+
+| # | 확인 | 결과 |
+|---|---|---|
+| ① | 역할 프롬프트·Stop 훅 적용 | ✅ |
+| ② | `AISM resume: <folder>` 첫 메시지·대화 유지 | ✅ |
+| ③ | session_id 원래 값 유지 | ✅ |
+
+**결론** — `--resume`은 같은 대화(역할·훅·session_id)를 새 창에 이어 붙인다. AISM은 세션 키당 `activeSessionId`를 저장해 "이어서 띄우기"로 재사용한다 (S-9).
+
+## E-005. Windows 토스트
+
+서버가 PowerShell WinRT 토스트(`scripts/toast.ps1`)를 띄우는 방식을 변형별로 확인.
+
+| 변형 | 방식 | 결과 |
+|---|---|---|
+| A | 동기·inherit·기본 플래그 | ✅ |
+| B | 동기·inherit·서버 플래그 (`-NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden`) | ✅ |
+| C | 비동기·pipe | ✅ |
+| D | 비동기·pipe·detached | ❌ |
+| E | 비동기·ignore | ✅ |
+| F | 서버와 동일(detached·ignore) | ❌ |
+| G | detached·ignore·windowsHide | ❌ |
+
+**결론** — `detached: true`면 오류 없이도 토스트가 표시되지 않는다. 서버는 detached 없이(`stdio: "ignore"`) 띄운다 (ADR 0014). 진단 스크립트는 로컬 `experiments/E-005-toast/diag.cjs`(git 제외).

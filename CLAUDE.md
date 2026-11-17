@@ -25,7 +25,7 @@ npm start      # 빌드 산출물 실행 (node server/dist/index.js)
 | `docs/OPEN_QUESTIONS.md` | 미결 사항 (Q-n) |
 | `docs/decisions/` | 확정된 결정 (ADR). **뒤집으려면 새 ADR을 쓴다** |
 | `docs/experiments.md` | 핵심 가정 검증 실험 기록 (E-001~E-003). 실험 코드는 로컬 `experiments/` (git 제외) |
-| `server/` | Fastify 서버 (TypeScript). `src/`에 config·artifacts·machine·store·sessions·launcher·orchestrator·notify·toast·index |
+| `server/` | Fastify 서버 (TypeScript). `src/`에 config·artifacts·machine·store·sessions·launcher·orchestrator·notify·toast·ui·index |
 | `web/` | React + Vite UI. `src/`에 App·api·components(TaskCard·Timeline) |
 | `hooks/stop.js` | Stop 훅 — 세션 Stop 시 서버 `/hook/stop`에 long-poll |
 | `roles/` | 범용 역할 프롬프트 (`_workflow.md`, `planner.md`, `verifier.md`, `coder.md`) |
