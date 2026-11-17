@@ -10,6 +10,7 @@
 | E-003 | `--append-system-prompt-file` 역할이 압축 후에도 유지되나 | ✅ 유지 | 2026-11-11 |
 | E-004 | `--resume`으로 같은 대화를 새 창에 이어 붙일 수 있나 (역할 프롬프트·Stop 훅·session_id) | ✅ 가능 — session_id 유지 | 2026-11-16 |
 | E-005 | 서버에서 PowerShell WinRT 토스트를 띄울 수 있나 | ✅ 가능 — 단 detached로 띄우면 표시 안 됨 | 2026-11-16 |
+| E-007 | Edge 앱 창을 서버가 지정 크기로 띄우고 닫을 때 크기를 저장할 수 있나 | ✅ 가능 — 전용 프로필(`--user-data-dir`) + `--window-size`, `pagehide` sendBeacon + resize 디바운스 | 2026-11-17 |
 
 ---
 
@@ -89,3 +90,9 @@
 | G | detached·ignore·windowsHide | ❌ |
 
 **결론** — `detached: true`면 오류 없이도 토스트가 표시되지 않는다. 서버는 detached 없이(`stdio: "ignore"`) 띄운다 (ADR 0014). 진단 스크립트는 로컬 `experiments/E-005-toast/diag.cjs`(git 제외).
+
+## E-007. UI 창 크기
+
+- 방법: `.claude/plans/261116-m2-polish/todo-v1-checklist.md` 1번 — 크기를 바꾼 뒤 저장 확인, 바꾼 직후 바로 닫기(sendBeacon), 서버 재시작 후 같은 크기, 일반 Edge 창이 떠 있는 상태에서 재시작, `AISM_NO_UI=1`.
+- 결과: 모두 이상 없음 (사용자 보고, 2026-11-17).
+- 참고: E-006(PID 생존 감지)은 계획만 하고 보류 — 실행하지 않았다(`261114-m2-coder-loop` todo-v1-notes N4).

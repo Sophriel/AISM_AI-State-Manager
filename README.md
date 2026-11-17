@@ -2,7 +2,7 @@
 
 역할이 고정된 Claude Code 세션(PLANNER / VERIFIER / CODER 등)을 파일 계약과 상태 머신으로 이어 붙여, 세션이 끝나면 다음 작업이 자동으로 이어지게 하는 로컬 오케스트레이터.
 
-> 상태: M1(PLANNER⇄VERIFIER 루프) 구현 중. Windows 전용, 사용자 1명, 개인 도구.
+> 상태: M2(PLANNER·VERIFIER·CODER 자동화) 완료. Windows 전용, 사용자 1명, 개인 도구.
 
 ## 설치
 
@@ -37,9 +37,10 @@ scripts\start_aism.bat
 
 1. UI에서 프로젝트를 고르고 **새 작업**을 누른다 — PLANNER 세션이 새 터미널 창에 뜬다.
 2. PLANNER 창에서 작업을 설명하면 PLANNER가 `plan-v1.md`를 작성하고 멈춘다.
-3. 서버가 PLANNER를 파킹하고 VERIFIER 세션을 띄운다 — VERIFIER가 `plan-v1-verify.md`에 `판정: PASS/REVISE`를 쓴다.
-4. REVISE면 PLANNER가 지시를 받아 `plan-v2.md`를 만들고 다시 VERIFIER로, PASS면 PLANNER가 todo 작성 지시를 받아 TODO_READY가 되면 알리고 멈춘다.
-5. UI의 **작업 종료**로 작업을 끝낸다.
+3. 서버가 PLANNER를 대기시키고 VERIFIER 세션을 띄운다 — VERIFIER가 `plan-vN-verify.md`에 `판정: PASS/REVISE`를 쓴다. REVISE면 PLANNER가 다음 판을 쓰고 다시 VERIFIER로(plan-v5부터는 REVISE마다 사용자 확인).
+4. PASS면 PLANNER가 `todo-vN.md`를 쓰고, 서버가 CODER 세션을 띄운다 — CODER가 todo를 검토(`todo-vN-verify.md`)하고, REVISE면 PLANNER가 todo를 고치고, PASS면 구현한다.
+5. CODER가 끝내면(Status DONE) PLANNER가 결과를 검토해 `todo-vN-checklist.md`를 쓰고 알린다(Windows 토스트). 체크리스트로 테스트한다.
+6. UI의 **작업 종료**로 작업을 끝낸다. 결정이 필요하거나 세션이 끊기면 UI 알림과 작업 카드 안내를 따른다(이어서 띄우기·다시 띄우기).
 
 플랜 폴더는 미리 만들지 말고, 새 작업을 시작한 뒤 PLANNER 창에서 만들게 한다.
 
@@ -48,7 +49,7 @@ scripts\start_aism.bat
 | 문서 | 내용 |
 |---|---|
 | [docs/VISION.md](docs/VISION.md) | 왜 만드는가, 무엇을 만들고 무엇을 안 만드는가 |
-| [docs/FEATURES.md](docs/FEATURES.md) | 기능 목록 (초안, 우선순위 포함) |
+| [docs/FEATURES.md](docs/FEATURES.md) | 기능 목록 (우선순위 포함) |
 | [docs/OPEN_QUESTIONS.md](docs/OPEN_QUESTIONS.md) | 아직 결정하지 않은 것 |
 | [docs/decisions/](docs/decisions/) | 결정 기록 (ADR) |
 | [docs/prior-art.md](docs/prior-art.md) | 검토한 기존 도구와 차이점 |

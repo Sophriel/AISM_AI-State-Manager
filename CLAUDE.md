@@ -3,7 +3,7 @@
 역할이 고정된 Claude Code 세션(PLANNER / VERIFIER / CODER)을 Stop 훅과 파일 계약으로 이어 붙이는 **로컬 오케스트레이터**.
 사용자 1명, Windows 전용, 개인 도구.
 
-현재 단계: **M1(PLANNER⇄VERIFIER 루프) 구현 중** — `docs/FEATURES.md` 상단.
+현재 단계: **M2 완료** — 다음 범위는 미정 (`docs/FEATURES.md` 상단).
 
 ## 명령
 
@@ -24,7 +24,7 @@ npm start      # 빌드 산출물 실행 (node server/dist/index.js)
 | `docs/FEATURES.md` | 기능 ID(R-/W-/S-/G-)와 우선순위, 마일스톤 |
 | `docs/OPEN_QUESTIONS.md` | 미결 사항 (Q-n) |
 | `docs/decisions/` | 확정된 결정 (ADR). **뒤집으려면 새 ADR을 쓴다** |
-| `docs/experiments.md` | 핵심 가정 검증 실험 기록 (E-001~E-003). 실험 코드는 로컬 `experiments/` (git 제외) |
+| `docs/experiments.md` | 핵심 가정 검증 실험 기록 (E-001~E-007, E-006은 보류). 실험 코드는 로컬 `experiments/` (git 제외) |
 | `server/` | Fastify 서버 (TypeScript). `src/`에 config·artifacts·machine·store·sessions·launcher·orchestrator·notify·toast·ui·index |
 | `web/` | React + Vite UI. `src/`에 App·api·components(TaskCard·Timeline) |
 | `hooks/stop.js` | Stop 훅 — 세션 Stop 시 서버 `/hook/stop`에 long-poll |
