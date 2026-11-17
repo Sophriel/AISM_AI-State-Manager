@@ -2,6 +2,7 @@
 // 상태 전이: launch 직후 working(새 작업 PLANNER는 unbound) → Stop 수신 시 평가 결과에 따라
 // hold→parked / block→working / allow→idle → 파킹 중 close→detached(pending 제거) → 다음 Stop 재평가.
 import type { Store } from "./store.js";
+import { EVENT_TEXT_MAX } from "./store.js";
 import type { Reply } from "./machine.js";
 
 export type SessionState = "unbound" | "working" | "parked" | "idle" | "detached";
@@ -125,7 +126,7 @@ export class Sessions {
       sessionKey,
       action: r.action,
     };
-    if (r.action === "block") event.reason = r.reason.slice(0, 80);
+    if (r.action === "block") event.reason = r.reason.slice(0, EVENT_TEXT_MAX);
     else if (note) event.reason = note;
     this.store.appendEvent(event);
   }

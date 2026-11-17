@@ -31,7 +31,7 @@ export type Reply = { action: "allow" } | { action: "block"; reason: string };
 export type Action =
   | { kind: "reply"; sessionKey: string; reply: Reply }
   | { kind: "hold"; sessionKey: string }
-  | { kind: "launch"; role: Role }
+  | { kind: "launch"; role: Role; instruction?: string }
   | { kind: "notify"; key: string; level: "info" | "warn"; message: string; copyText?: string }
   | { kind: "record"; notified?: string[]; consecutiveBlocks?: Record<string, number>; instructed?: string[] }
   | { kind: "undeliverable"; role: Role; text: string };
@@ -68,6 +68,10 @@ export function instructionImplement(T: number): string {
 }
 export function instructionBlocked(N: number): string {
   return `plan-v${N}.md가 BLOCKED다. code-log.md의 Blocked 내용을 읽고 plan-v${N + 1}.md를 작성해.`;
+}
+// M2 polish §3 H — 완료 후 체크리스트 지시.
+export function instructionChecklist(N: number, T: number): string {
+  return `plan-v${N}.md가 DONE이다. code-log.md와 변경 내용을 검토하고 todo-v${T}-checklist.md(테스트 방법·확인 항목)를 작성해. 검토 중 발견한 문제는 체크리스트 맨 위 "## 검토 메모"에 적어.`;
 }
 
 const part = (v: string | number | null): string => (v === null ? "null" : String(v));
@@ -118,12 +122,21 @@ export function evaluate(input: MachineInput): Action[] {
     return true;
   };
 
+  // hold = 지시받은 일을 끝내고 체크포인트에 도달 — 연속 block 횟수를 0으로 (M2 polish N1).
+  const hold = (sessionKey: string) => {
+    actions.push({ kind: "hold", sessionKey });
+    if ((counts[sessionKey] ?? 0) !== 0) {
+      counts[sessionKey] = 0;
+      dirty = true;
+    }
+  };
+
   // 지시 전달 규칙 (R1-4, R1-5, ADR 0011). "blocked" = peer가 parked여서 block을 냈다.
   // 배정 없음 → launch, parked → block, idle·detached → undeliverable, working·unbound → 없음.
   const deliver = (role: Role, text: string): "blocked" | "none" => {
     const peer = peers[role];
     if (!peer) {
-      actions.push({ kind: "launch", role });
+      actions.push({ kind: "launch", role, instruction: text });
     } else if (peer.state === "parked") {
       return block(peer.sessionKey, text) ? "blocked" : "none";
     } else if (peer.state === "idle" || peer.state === "detached") {
@@ -173,7 +186,7 @@ export function evaluate(input: MachineInput): Action[] {
     }
     // 행 3 — IN_REVIEW, verify-vN 없음.
     if (snapshot.status === "IN_REVIEW" && !snapshot.verifyExists) {
-      actions.push({ kind: "hold", sessionKey: sender.sessionKey });
+      hold(sender.sessionKey);
       deliver("verifier", instructionVerifyPlan(N ?? 0));
       return finish();
     }
@@ -211,15 +224,24 @@ export function evaluate(input: MachineInput): Action[] {
         allow(sender.sessionKey);
         notify(`notodo-v${part(N)}`, "warn", `plan-v${part(N)}이 TODO_READY인데 todo 파일이 없습니다`);
       } else if (!todo.verifyExists) {
-        actions.push({ kind: "hold", sessionKey: sender.sessionKey });
+        hold(sender.sessionKey);
         deliver("coder", instructionReviewTodo(T));
       } else {
         allow(sender.sessionKey);
       }
       return finish();
     }
-    if (snapshot.status === "IN_PROGRESS" || snapshot.status === "BLOCKED" || snapshot.status === "DONE") {
+    if (snapshot.status === "IN_PROGRESS" || snapshot.status === "BLOCKED") {
       allow(sender.sessionKey);
+      return finish();
+    }
+    if (snapshot.status === "DONE") {
+      // 행 5d — 체크리스트 작성 완료 알림 (M2 polish §3 H).
+      allow(sender.sessionKey);
+      const T = todo.latestN;
+      if (T !== null && todo.checklistExists) {
+        notify(`checklist-v${T}`, "info", `todo-v${T}-checklist.md 작성 완료 — 체크리스트로 테스트하세요`);
+      }
       return finish();
     }
     // status null (plan 파일 없음) → 행 11로 낙하.
@@ -236,11 +258,11 @@ export function evaluate(input: MachineInput): Action[] {
     if (snapshot.verdict === "REVISE") {
       if ((N ?? 0) < config.confirmFromVersion) {
         // 행 6 — REVISE, N < confirmFromVersion.
-        actions.push({ kind: "hold", sessionKey: sender.sessionKey });
+        hold(sender.sessionKey);
         deliver("planner", instructionPlanRevise(N ?? 0));
       } else {
         // 행 7 — REVISE, N ≥ confirmFromVersion (v5 게이트, D2).
-        actions.push({ kind: "hold", sessionKey: sender.sessionKey });
+        hold(sender.sessionKey);
         notify(`gate-v${part(N)}`, "warn", `plan-v${part(N)} REVISE — 계속 개정하려면 PLANNER 창에서 지시하세요`);
       }
       return finish();
@@ -283,7 +305,7 @@ export function evaluate(input: MachineInput): Action[] {
         return finish();
       }
       if (todo.verdict === "REVISE") {
-        actions.push({ kind: "hold", sessionKey: sender.sessionKey });
+        hold(sender.sessionKey);
         if (T < config.confirmFromVersion) {
           // c3
           deliver("planner", instructionTodoRevise(T));
@@ -331,8 +353,13 @@ export function evaluate(input: MachineInput): Action[] {
       // c9
       allow(sender.sessionKey);
       notify(`done-v${part(N)}`, "info", `구현 완료 (plan-v${part(N)}) — 테스트 후 작업을 종료하세요`);
-      const p = peers.planner;
-      if (p && p.state === "parked") allow(p.sessionKey);
+      const key = `checklist-v${part(T)}`;
+      if (T !== null && !instructed.has(key) && !todo.checklistExists) {
+        if (deliver("planner", instructionChecklist(N ?? 0, T)) === "blocked") {
+          instructed.add(key);
+          dirty = true;
+        }
+      }
       return finish();
     }
     // 그 외 → 행 11로 낙하.

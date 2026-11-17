@@ -28,6 +28,7 @@ export interface AismConfig {
   parkLimitSec: number;
   hookTimeoutSec: number;
   toast?: boolean;
+  window?: { width: number; height: number };
 }
 
 // 런처가 세션 시작 전에 항상 먼저 비운 뒤 역할 엔드포인트 묶음으로 덮어쓰는 변수 (R1-9).
@@ -63,7 +64,7 @@ const TOP_KEYS = [
   "hookTimeoutSec",
 ] as const;
 
-const OPTIONAL_TOP_KEYS = ["toast"] as const;
+const OPTIONAL_TOP_KEYS = ["toast", "window"] as const;
 
 const NUM_KEYS = ["port", "confirmFromVersion", "maxConsecutiveBlocks", "parkLimitSec", "hookTimeoutSec"] as const;
 const ROLE_NAMES = ["planner", "verifier", "coder"] as const;
@@ -102,6 +103,22 @@ export function loadConfig(configPath: string): AismConfig {
       if (k in data && typeof data[k] !== "number") problems.push(`${k}: number여야 함`);
     }
     if ("toast" in data && typeof data.toast !== "boolean") problems.push("toast: boolean이어야 함");
+
+    // window — 닫힌 객체, width·height는 양의 정수 (M2 polish §3 E).
+    if ("window" in data) {
+      const w = data.window;
+      if (!isObj(w)) {
+        problems.push("window: 객체여야 함");
+      } else {
+        for (const k of Object.keys(w)) {
+          if (k !== "width" && k !== "height") problems.push(`window.${k}: 정의되지 않은 키`);
+        }
+        for (const k of ["width", "height"] as const) {
+          if (!(k in w)) problems.push(`window.${k}: 없음`);
+          else if (!Number.isInteger(w[k]) || (w[k] as number) <= 0) problems.push(`window.${k}: 양의 정수여야 함`);
+        }
+      }
+    }
 
     // endpoints — 객체, 각 값은 객체, 그 안의 각 값은 string.
     const endpoints = data.endpoints;
@@ -214,4 +231,22 @@ export function loadConfig(configPath: string): AismConfig {
   }
 
   return data as AismConfig;
+}
+
+// 창 크기 자동 저장 (M2 polish §3 E) — 설정 파일의 최상위 window만 바꿔 원자적으로 다시 쓴다. 실패하면 false.
+export function saveWindowSize(configPath: string, win: { width: number; height: number }): boolean {
+  try {
+    const raw = fs.readFileSync(configPath, "utf8");
+    const data = JSON.parse(raw) as Record<string, unknown>;
+    data.window = { width: win.width, height: win.height };
+    const eol = raw.includes("\r\n") ? "\r\n" : "\n";
+    const out = JSON.stringify(data, null, 2).replace(/\n/g, eol) + eol;
+    const tmp = `${configPath}.tmp`;
+    fs.writeFileSync(tmp, out);
+    fs.renameSync(tmp, configPath);
+    return true;
+  } catch (e) {
+    console.warn(`창 크기 저장 실패 — ${String(e)}`);
+    return false;
+  }
 }

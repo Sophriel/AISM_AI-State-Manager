@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { describe, it, expect } from "vitest";
-import { AISM_ROOT, MANAGED_ENV, loadConfig } from "./config.js";
+import { AISM_ROOT, MANAGED_ENV, loadConfig, saveWindowSize } from "./config.js";
 
 const examplePath = path.join(AISM_ROOT, "aism.config.example.json");
 const example = loadConfig(examplePath);
@@ -97,6 +97,34 @@ describe("config", () => {
     expect(() => loadConfig(writeTemp(bad))).toThrow(/toast: boolean이어야 함/);
   });
 
+  it("window 없음 → 통과", () => {
+    const ok = { ...example } as Record<string, unknown>;
+    delete ok.window;
+    expect(loadConfig(writeTemp(ok)).port).toBe(4400);
+  });
+
+  it("window: { width: 800, height: 600 } → 통과", () => {
+    const ok = { ...example, window: { width: 800, height: 600 } };
+    expect(loadConfig(writeTemp(ok)).window).toEqual({ width: 800, height: 600 });
+  });
+
+  it("window.height 누락 → throw", () => {
+    const bad = { ...example, window: { width: 800 } };
+    expect(() => loadConfig(writeTemp(bad))).toThrow(/window\.height: 없음/);
+  });
+
+  it("window에 정의되지 않은 키 → throw", () => {
+    const bad = { ...example, window: { width: 800, height: 600, x: 1 } };
+    expect(() => loadConfig(writeTemp(bad))).toThrow(/window\.x: 정의되지 않은 키/);
+  });
+
+  it("window 값이 양의 정수가 아니면 throw (0·-1·1.5·\"800\")", () => {
+    for (const v of [0, -1, 1.5, "800"]) {
+      const bad = { ...example, window: { width: v, height: 600 } };
+      expect(() => loadConfig(writeTemp(bad))).toThrow(/양의 정수여야 함/);
+    }
+  });
+
   it("role 객체에 정의되지 않은 키면 throw", () => {
     const bad = {
       ...example,
@@ -176,5 +204,50 @@ describe("config", () => {
 
   it("AISM_ROOT는 aism.config.example.json이 있는 폴더", () => {
     expect(fs.existsSync(path.join(AISM_ROOT, "aism.config.example.json"))).toBe(true);
+  });
+});
+
+describe("saveWindowSize (M2 polish §3 E)", () => {
+  function tempConfig(content: string): string {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "aism-cfg-"));
+    const p = path.join(dir, "config.json");
+    fs.writeFileSync(p, content);
+    return p;
+  }
+
+  it("window 없는 파일에 추가·다른 키 그대로", () => {
+    const p = tempConfig(JSON.stringify({ port: 4400, toast: true }));
+    expect(saveWindowSize(p, { width: 800, height: 600 })).toBe(true);
+    expect(JSON.parse(fs.readFileSync(p, "utf8"))).toEqual({
+      port: 4400,
+      toast: true,
+      window: { width: 800, height: 600 },
+    });
+  });
+
+  it("window 있는 파일은 교체", () => {
+    const p = tempConfig(JSON.stringify({ port: 4400, window: { width: 1000, height: 900 } }));
+    expect(saveWindowSize(p, { width: 700, height: 500 })).toBe(true);
+    expect(JSON.parse(fs.readFileSync(p, "utf8")).window).toEqual({ width: 700, height: 500 });
+  });
+
+  it("CRLF 원본 → 결과에도 \\r\\n", () => {
+    const p = tempConfig('{\r\n  "port": 4400\r\n}\r\n');
+    expect(saveWindowSize(p, { width: 800, height: 600 })).toBe(true);
+    const raw = fs.readFileSync(p, "utf8");
+    expect(raw).toContain("\r\n");
+    expect(raw.endsWith("\r\n")).toBe(true);
+  });
+
+  it("결과 파일이 loadConfig 통과", () => {
+    const p = tempConfig(JSON.stringify(example));
+    expect(saveWindowSize(p, { width: 800, height: 600 })).toBe(true);
+    expect(loadConfig(p).window).toEqual({ width: 800, height: 600 });
+  });
+
+  it("깨진 JSON → false·파일 그대로", () => {
+    const p = tempConfig("{broken");
+    expect(saveWindowSize(p, { width: 800, height: 600 })).toBe(false);
+    expect(fs.readFileSync(p, "utf8")).toBe("{broken");
   });
 });

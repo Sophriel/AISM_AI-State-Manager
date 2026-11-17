@@ -12,6 +12,7 @@ import {
   instructionTodoVerdictLine,
   instructionImplement,
   instructionBlocked,
+  instructionChecklist,
   type MachineInput,
   type Action,
 } from "./machine.js";
@@ -21,7 +22,7 @@ function input(overrides: Partial<MachineInput> = {}): MachineInput {
     sender: { sessionKey: "planner-1", role: "planner", bound: true },
     taskActive: true,
     snapshot: { latestN: 3, status: "IN_REVIEW", verifyExists: false, verdict: null },
-    todo: { latestN: null, verifyExists: false, verdict: null },
+    todo: { latestN: null, verifyExists: false, verdict: null, checklistExists: false },
     newPlanFolders: [],
     peers: {},
     record: { notified: [], consecutiveBlocks: {}, instructed: [] },
@@ -138,12 +139,12 @@ describe("행 3 — IN_REVIEW, verify 없음 (peer 4가지)", () => {
     expect(actions.some((a) => a.kind === "launch")).toBe(false);
   });
 
-  it("peer 없음 → hold + launch(verifier)", () => {
+  it("peer 없음 → hold + launch(verifier, instructionVerifyPlan(3))", () => {
     const actions = evaluate(
       input({ snapshot: { latestN: 3, status: "IN_REVIEW", verifyExists: false, verdict: null } }),
     );
     expect(actions.some((a) => a.kind === "hold" && a.sessionKey === "planner-1")).toBe(true);
-    expect(actions).toContainEqual({ kind: "launch", role: "verifier" });
+    expect(actions).toContainEqual({ kind: "launch", role: "verifier", instruction: instructionVerifyPlan(3) });
   });
 });
 
@@ -221,22 +222,22 @@ describe("행 5 — APPROVED / TODO_READY / 그 이후 (W5)", () => {
     expect(n.map((x) => [x.key, x.level])).toEqual([["notodo-v3", "warn"]]);
   });
 
-  it("5t(b). TODO_READY, todo T=1·verify 없음, peers 없음 → hold(planner-1) + launch(coder)", () => {
+  it("5t(b). TODO_READY, todo T=1·verify 없음, peers 없음 → hold(planner-1) + launch(coder, instructionReviewTodo(1))", () => {
     const actions = evaluate(
       input({
         snapshot: { latestN: 3, status: "TODO_READY", verifyExists: true, verdict: "PASS" },
-        todo: { latestN: 1, verifyExists: false, verdict: null },
+        todo: { latestN: 1, verifyExists: false, verdict: null, checklistExists: false },
       }),
     );
     expect(actions.some((a) => a.kind === "hold" && a.sessionKey === "planner-1")).toBe(true);
-    expect(actions).toContainEqual({ kind: "launch", role: "coder" });
+    expect(actions).toContainEqual({ kind: "launch", role: "coder", instruction: instructionReviewTodo(1) });
   });
 
   it("5t(b'). 같은 조건 peers.coder parked → coder에 block(instructionReviewTodo(1))", () => {
     const actions = evaluate(
       input({
         snapshot: { latestN: 3, status: "TODO_READY", verifyExists: true, verdict: "PASS" },
-        todo: { latestN: 1, verifyExists: false, verdict: null },
+        todo: { latestN: 1, verifyExists: false, verdict: null, checklistExists: false },
         peers: { coder: { sessionKey: "coder-1", state: "parked" } },
       }),
     );
@@ -249,19 +250,41 @@ describe("행 5 — APPROVED / TODO_READY / 그 이후 (W5)", () => {
     const actions = evaluate(
       input({
         snapshot: { latestN: 3, status: "TODO_READY", verifyExists: true, verdict: "PASS" },
-        todo: { latestN: 1, verifyExists: true, verdict: "PASS" },
+        todo: { latestN: 1, verifyExists: true, verdict: "PASS", checklistExists: false },
       }),
     );
     expect(actions).toEqual([{ kind: "reply", sessionKey: "planner-1", reply: { action: "allow" } }]);
   });
 
-  it("5c. IN_PROGRESS / BLOCKED / DONE → allow, 알림 없음", () => {
+  it("5c. IN_PROGRESS / BLOCKED / DONE(T null) → allow, 알림 없음", () => {
     for (const status of ["IN_PROGRESS", "BLOCKED", "DONE"] as const) {
       const actions = evaluate(
         input({ snapshot: { latestN: 3, status, verifyExists: true, verdict: "PASS" } }),
       );
       expect(actions).toEqual([{ kind: "reply", sessionKey: "planner-1", reply: { action: "allow" } }]);
     }
+  });
+
+  it("5d. DONE, T=1, checklist 있음 → allow + checklist-v1 info", () => {
+    const actions = evaluate(
+      input({
+        snapshot: { latestN: 3, status: "DONE", verifyExists: true, verdict: "PASS" },
+        todo: { latestN: 1, verifyExists: true, verdict: "PASS", checklistExists: true },
+      }),
+    );
+    expect(allowTo(actions, "planner-1")).toBe(true);
+    const n = notifies(actions);
+    expect(n.map((x) => [x.key, x.level])).toEqual([["checklist-v1", "info"]]);
+  });
+
+  it("5d. DONE, T=1, checklist 없음 → allow만 (알림 없음)", () => {
+    const actions = evaluate(
+      input({
+        snapshot: { latestN: 3, status: "DONE", verifyExists: true, verdict: "PASS" },
+        todo: { latestN: 1, verifyExists: true, verdict: "PASS", checklistExists: false },
+      }),
+    );
+    expect(actions).toEqual([{ kind: "reply", sessionKey: "planner-1", reply: { action: "allow" } }]);
   });
 });
 
@@ -279,7 +302,7 @@ describe("행 6 — VERIFIER REVISE, N < confirmFromVersion", () => {
     expect(b?.reply).toEqual({ action: "block", reason: instructionPlanRevise(3) });
   });
 
-  it("peer 없음 → hold + launch(planner)", () => {
+  it("peer 없음 → hold + launch(planner, instructionPlanRevise(3))", () => {
     const actions = evaluate(
       input({
         sender: { sessionKey: "verifier-1", role: "verifier", bound: true },
@@ -287,7 +310,7 @@ describe("행 6 — VERIFIER REVISE, N < confirmFromVersion", () => {
       }),
     );
     expect(actions.some((a) => a.kind === "hold" && a.sessionKey === "verifier-1")).toBe(true);
-    expect(actions).toContainEqual({ kind: "launch", role: "planner" });
+    expect(actions).toContainEqual({ kind: "launch", role: "planner", instruction: instructionPlanRevise(3) });
   });
 
   it("peer detached → hold + undeliverable(planner), launch 없음", () => {
@@ -413,6 +436,49 @@ describe("행 9 — VERIFIER 판정 줄 형식 오류", () => {
   });
 });
 
+describe("N1 — hold가 연속 block 횟수 초기화", () => {
+  it("행 3 hold(planner-1) → consecutiveBlocks[planner-1] 0으로 기록", () => {
+    const actions = evaluate(
+      input({
+        snapshot: { latestN: 3, status: "IN_REVIEW", verifyExists: false, verdict: null },
+        peers: { verifier: { sessionKey: "verifier-1", state: "parked" } },
+        record: { notified: [], consecutiveBlocks: { "planner-1": 3 }, instructed: [] },
+      }),
+    );
+    expect(actions.some((a) => a.kind === "hold" && a.sessionKey === "planner-1")).toBe(true);
+    const rec = records(actions)[0];
+    expect(rec.consecutiveBlocks?.["planner-1"]).toBe(0);
+  });
+
+  it("hold 사이에 block 왕복 — 4번째도 block, blocks- 알림 없음", () => {
+    // 1) PLANNER Stop (행 3) → hold(planner-1) + verifier에 block.
+    const a1 = evaluate(
+      input({
+        snapshot: { latestN: 3, status: "IN_REVIEW", verifyExists: false, verdict: null },
+        peers: { verifier: { sessionKey: "verifier-1", state: "parked" } },
+        record: { notified: [], consecutiveBlocks: { "planner-1": 3 }, instructed: [] },
+      }),
+    );
+    const rec1 = records(a1)[0];
+    // 2) VERIFIER Stop (행 6, N=1 < confirmFromVersion) → hold(verifier-1) + planner에 block.
+    const a2 = evaluate(
+      input({
+        sender: { sessionKey: "verifier-1", role: "verifier", bound: true },
+        snapshot: { latestN: 1, status: "IN_REVIEW", verifyExists: true, verdict: "REVISE" },
+        peers: { planner: { sessionKey: "planner-1", state: "parked" } },
+        record: {
+          notified: rec1.notified,
+          consecutiveBlocks: rec1.consecutiveBlocks,
+          instructed: rec1.instructed,
+        },
+      }),
+    );
+    const b = blockTo(a2, "planner-1");
+    expect(b?.reply).toEqual({ action: "block", reason: instructionPlanRevise(1) });
+    expect(notifies(a2).some((n) => n.key.startsWith("blocks-"))).toBe(false);
+  });
+});
+
 describe("행 10 — verify-vN 없음", () => {
   it("allow + notify(noverify-v3)", () => {
     const actions = evaluate(
@@ -447,7 +513,7 @@ describe("CODER 행 c1~c9", () => {
       input({
         sender: coder,
         snapshot: { latestN: 3, status: "TODO_READY", verifyExists: true, verdict: "PASS" },
-        todo: { latestN: 1, verifyExists: false, verdict: null },
+        todo: { latestN: 1, verifyExists: false, verdict: null, checklistExists: false },
       }),
     );
     expect(allowTo(actions, "coder-1")).toBe(true);
@@ -460,7 +526,7 @@ describe("CODER 행 c1~c9", () => {
       input({
         sender: coder,
         snapshot: { latestN: 3, status: "TODO_READY", verifyExists: true, verdict: "PASS" },
-        todo: { latestN: 1, verifyExists: true, verdict: "REVISE" },
+        todo: { latestN: 1, verifyExists: true, verdict: "REVISE", checklistExists: false },
         peers: { planner: { sessionKey: "planner-1", state: "parked" } },
       }),
     );
@@ -474,7 +540,7 @@ describe("CODER 행 c1~c9", () => {
       input({
         sender: coder,
         snapshot: { latestN: 3, status: "TODO_READY", verifyExists: true, verdict: "PASS" },
-        todo: { latestN: 5, verifyExists: true, verdict: "REVISE" },
+        todo: { latestN: 5, verifyExists: true, verdict: "REVISE", checklistExists: false },
         peers: { planner: { sessionKey: "planner-1", state: "parked" } },
       }),
     );
@@ -489,7 +555,7 @@ describe("CODER 행 c1~c9", () => {
       input({
         sender: coder,
         snapshot: { latestN: 3, status: "TODO_READY", verifyExists: true, verdict: "PASS" },
-        todo: { latestN: 1, verifyExists: true, verdict: "MALFORMED" },
+        todo: { latestN: 1, verifyExists: true, verdict: "MALFORMED", checklistExists: false },
       }),
     );
     const b = blockTo(actions, "coder-1");
@@ -501,7 +567,7 @@ describe("CODER 행 c1~c9", () => {
       input({
         sender: coder,
         snapshot: { latestN: 3, status: "TODO_READY", verifyExists: true, verdict: "PASS" },
-        todo: { latestN: 1, verifyExists: true, verdict: "PASS" },
+        todo: { latestN: 1, verifyExists: true, verdict: "PASS", checklistExists: false },
       }),
     );
     const b = blockTo(actions, "coder-1");
@@ -515,7 +581,7 @@ describe("CODER 행 c1~c9", () => {
       input({
         sender: coder,
         snapshot: { latestN: 3, status: "TODO_READY", verifyExists: true, verdict: "PASS" },
-        todo: { latestN: 1, verifyExists: true, verdict: "PASS" },
+        todo: { latestN: 1, verifyExists: true, verdict: "PASS", checklistExists: false },
         record: { notified: [], consecutiveBlocks: {}, instructed: ["impl-v1"] },
       }),
     );
@@ -527,7 +593,7 @@ describe("CODER 행 c1~c9", () => {
       input({
         sender: coder,
         snapshot: { latestN: 3, status: "IN_PROGRESS", verifyExists: true, verdict: "PASS" },
-        todo: { latestN: 1, verifyExists: true, verdict: "PASS" },
+        todo: { latestN: 1, verifyExists: true, verdict: "PASS", checklistExists: false },
       }),
     );
     expect(allowTo(actions, "coder-1")).toBe(true);
@@ -564,7 +630,67 @@ describe("CODER 행 c1~c9", () => {
     expect(rec.instructed ?? []).not.toContain("blocked-v3");
   });
 
-  it("c9. DONE, planner parked → planner allow + coder allow + notify(done-v3, info)", () => {
+  it("c9. DONE, T=1, planner parked → PLANNER에 block(instructionChecklist(3, 1)) + record.instructed에 checklist-v1", () => {
+    const actions = evaluate(
+      input({
+        sender: coder,
+        snapshot: { latestN: 3, status: "DONE", verifyExists: true, verdict: "PASS" },
+        todo: { latestN: 1, verifyExists: true, verdict: "PASS", checklistExists: false },
+        peers: { planner: { sessionKey: "planner-1", state: "parked" } },
+      }),
+    );
+    expect(allowTo(actions, "coder-1")).toBe(true);
+    const b = blockTo(actions, "planner-1");
+    expect(b?.reply).toEqual({ action: "block", reason: instructionChecklist(3, 1) });
+    const rec = records(actions)[0];
+    expect(rec.instructed ?? []).toContain("checklist-v1");
+  });
+
+  it("c9. DONE, T=1, checklist 있음 → 지시 없음 (coder allow + done-v3만)", () => {
+    const actions = evaluate(
+      input({
+        sender: coder,
+        snapshot: { latestN: 3, status: "DONE", verifyExists: true, verdict: "PASS" },
+        todo: { latestN: 1, verifyExists: true, verdict: "PASS", checklistExists: true },
+        peers: { planner: { sessionKey: "planner-1", state: "parked" } },
+      }),
+    );
+    expect(allowTo(actions, "coder-1")).toBe(true);
+    expect(blockTo(actions, "planner-1")).toBeUndefined();
+    const n = notifies(actions);
+    expect(n.map((x) => [x.key, x.level])).toEqual([["done-v3", "info"]]);
+  });
+
+  it("c9. DONE, T=1, instructed에 checklist-v1 → 지시 없음", () => {
+    const actions = evaluate(
+      input({
+        sender: coder,
+        snapshot: { latestN: 3, status: "DONE", verifyExists: true, verdict: "PASS" },
+        todo: { latestN: 1, verifyExists: true, verdict: "PASS", checklistExists: false },
+        peers: { planner: { sessionKey: "planner-1", state: "parked" } },
+        record: { notified: [], consecutiveBlocks: {}, instructed: ["checklist-v1"] },
+      }),
+    );
+    expect(allowTo(actions, "coder-1")).toBe(true);
+    expect(blockTo(actions, "planner-1")).toBeUndefined();
+  });
+
+  it("c9. DONE, T=1, planner idle → undeliverable(planner, instructionChecklist(3, 1)), instructed 기록 없음", () => {
+    const actions = evaluate(
+      input({
+        sender: coder,
+        snapshot: { latestN: 3, status: "DONE", verifyExists: true, verdict: "PASS" },
+        todo: { latestN: 1, verifyExists: true, verdict: "PASS", checklistExists: false },
+        peers: { planner: { sessionKey: "planner-1", state: "idle" } },
+      }),
+    );
+    expect(allowTo(actions, "coder-1")).toBe(true);
+    expect(actions).toContainEqual({ kind: "undeliverable", role: "planner", text: instructionChecklist(3, 1) });
+    const rec = records(actions)[0];
+    expect(rec.instructed ?? []).not.toContain("checklist-v1");
+  });
+
+  it("c9. DONE, T null → CODER allow + done-v3 알림만 (지시 없음)", () => {
     const actions = evaluate(
       input({
         sender: coder,
@@ -573,7 +699,7 @@ describe("CODER 행 c1~c9", () => {
       }),
     );
     expect(allowTo(actions, "coder-1")).toBe(true);
-    expect(allowTo(actions, "planner-1")).toBe(true);
+    expect(blockTo(actions, "planner-1")).toBeUndefined();
     const n = notifies(actions);
     expect(n.map((x) => [x.key, x.level])).toEqual([["done-v3", "info"]]);
   });

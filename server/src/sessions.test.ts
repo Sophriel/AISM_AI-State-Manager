@@ -160,6 +160,18 @@ describe("Sessions", () => {
     expect(last).toMatchObject({ type: "reply", sessionKey: "planner-1", action: "allow" });
     expect("reason" in last).toBe(false);
   });
+
+  it("resolve — block reason 2500자 → reply 이벤트 reason 2000자 (M2 polish §3 A)", () => {
+    const store = makeStore();
+    const sessions = new Sessions(store, 3300, { setTimer, clearTimer });
+    sessions.register("planner-1", "working");
+
+    sessions.onStop("planner-1", "s1", () => {}, () => {});
+    sessions.resolve("planner-1", { action: "block", reason: "x".repeat(2500) });
+    const reply = store.readEvents().find((e) => e.type === "reply" && e.sessionKey === "planner-1");
+    expect(reply).toBeDefined();
+    expect(String(reply!.reason).length).toBe(2000);
+  });
 });
 
 describe("A-1 — 현재 pending의 연결만 끊김 판정", () => {

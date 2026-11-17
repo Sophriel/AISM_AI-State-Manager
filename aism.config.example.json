@@ -26,5 +26,6 @@
   "maxConsecutiveBlocks": 3,
   "parkLimitSec": 3300,
   "hookTimeoutSec": 3600,
-  "toast": true
+  "toast": true,
+  "window": { "width": 1000, "height": 900 }
 }

@@ -34,7 +34,9 @@ export interface State {
   sessions: Record<string, SessionInfo>;
 }
 
-export type EventType = "stop" | "reply" | "launch" | "bind" | "notify" | "detach" | "close-task" | "hold";
+export type EventType = "stop" | "reply" | "launch" | "bind" | "notify" | "detach" | "close-task" | "hold" | "clear-timeline";
+
+export const EVENT_TEXT_MAX = 2000; // 이벤트에 저장하는 응답·지시 문구 최대 길이 (M2 polish §3 A)
 
 const emptyState = (): State => ({
   activeTask: null,

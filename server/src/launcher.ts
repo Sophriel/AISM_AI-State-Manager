@@ -26,6 +26,7 @@ export interface LaunchOptions {
   now?: Date;
   hex?: string; // 4자리 hex, 기본 랜덤
   resumeSessionId?: string; // 있으면 --resume <id> + "AISM resume: <folder>" (S-9)
+  firstInstruction?: string; // 있으면 AISM context 헤더에 "First instruction: …" (M2 polish §3 B)
 }
 
 const toSlash = (p: string): string => p.replace(/\\/g, "/");
@@ -68,6 +69,7 @@ export function launchSession(opts: LaunchOptions): { sessionKey: string; dir: s
     `Project root: ${toSlash(projectCfg.root)}`,
     `Plans root: ${toSlash(path.join(projectCfg.root, projectCfg.plansDir))}`,
     `Task folder: ${folder ?? "(new task — wait for the user)"}`,
+    ...(opts.firstInstruction ? [`First instruction: ${opts.firstInstruction}`] : []),
   ].join("\n");
   promptParts.push(header);
   fs.writeFileSync(path.join(dir, "prompt.md"), promptParts.join("\n\n") + "\n");

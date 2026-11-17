@@ -87,28 +87,36 @@ describe("readTodoSnapshot", () => {
   it("todo 없음 — latestN null", () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "aism-todo-"));
     fs.writeFileSync(path.join(dir, "plan-v1.md"), "Status: DRAFT\n");
-    expect(readTodoSnapshot(dir)).toEqual({ latestN: null, verifyExists: false, verdict: null });
+    expect(readTodoSnapshot(dir)).toEqual({ latestN: null, verifyExists: false, verdict: null, checklistExists: false });
   });
 
-  it("todo-v1·v2 + checklist·notes — 최신 T=2, verify 없음", () => {
+  it("todo-v1·v2 + checklist·notes — 최신 T=2, verify 없음 (todo-v1-checklist만 → checklistExists false)", () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "aism-todo-"));
     for (const name of ["todo-v1.md", "todo-v2.md", "todo-v1-checklist.md", "todo-v1-notes.md"]) {
       fs.writeFileSync(path.join(dir, name), "x\n");
     }
-    expect(readTodoSnapshot(dir)).toEqual({ latestN: 2, verifyExists: false, verdict: null });
+    expect(readTodoSnapshot(dir)).toEqual({ latestN: 2, verifyExists: false, verdict: null, checklistExists: false });
+  });
+
+  it("checklistExists — todo-v2만 → false, todo-v2-checklist.md 추가 → true", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "aism-todo-"));
+    fs.writeFileSync(path.join(dir, "todo-v2.md"), "x\n");
+    expect(readTodoSnapshot(dir).checklistExists).toBe(false);
+    fs.writeFileSync(path.join(dir, "todo-v2-checklist.md"), "x\n");
+    expect(readTodoSnapshot(dir).checklistExists).toBe(true);
   });
 
   it("verify 마지막 줄 — PASS / REVISE / 오타(MALFORMED)", () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "aism-todo-"));
     fs.writeFileSync(path.join(dir, "todo-v1.md"), "x\n");
     fs.writeFileSync(path.join(dir, "todo-v1-verify.md"), "내용\n판정: PASS\n");
-    expect(readTodoSnapshot(dir)).toEqual({ latestN: 1, verifyExists: true, verdict: "PASS" });
+    expect(readTodoSnapshot(dir)).toEqual({ latestN: 1, verifyExists: true, verdict: "PASS", checklistExists: false });
 
     fs.writeFileSync(path.join(dir, "todo-v1-verify.md"), "내용\n판정: REVISE\n");
-    expect(readTodoSnapshot(dir)).toEqual({ latestN: 1, verifyExists: true, verdict: "REVISE" });
+    expect(readTodoSnapshot(dir)).toEqual({ latestN: 1, verifyExists: true, verdict: "REVISE", checklistExists: false });
 
     fs.writeFileSync(path.join(dir, "todo-v1-verify.md"), "내용\n판정: 통과\n");
-    expect(readTodoSnapshot(dir)).toEqual({ latestN: 1, verifyExists: true, verdict: "MALFORMED" });
+    expect(readTodoSnapshot(dir)).toEqual({ latestN: 1, verifyExists: true, verdict: "MALFORMED", checklistExists: false });
   });
 
   it("폴더가 없으면 null", () => {
@@ -116,6 +124,7 @@ describe("readTodoSnapshot", () => {
       latestN: null,
       verifyExists: false,
       verdict: null,
+      checklistExists: false,
     });
   });
 });

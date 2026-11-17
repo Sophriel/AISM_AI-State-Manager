@@ -253,4 +253,36 @@ describe("launchSession", () => {
     const argsTxt = fs.readFileSync(path.join(dir, "args.txt"), "utf8");
     expect(argsTxt.trimEnd().endsWith(`--resume abc-123 "AISM resume: 261111-alpha"`)).toBe(true);
   });
+
+  it("firstInstruction — prompt.md 헤더 마지막 줄 'First instruction: …', 없으면 그 줄 없음 (M2 polish §3 B)", () => {
+    const config = makeConfig();
+    const { dir } = launchSession({
+      config,
+      project: "EWE",
+      role: "planner",
+      folder: "261111-alpha",
+      aismRoot,
+      spawn: () => {},
+      now: NOW,
+      hex: "5566",
+      firstInstruction: "plan-v1.md를 검토해.",
+    });
+
+    const prompt = fs.readFileSync(path.join(dir, "prompt.md"), "utf8");
+    const lines = prompt.split("\n").filter((l) => l.trim() !== "");
+    expect(lines[lines.length - 1]).toBe("First instruction: plan-v1.md를 검토해.");
+
+    const { dir: dir2 } = launchSession({
+      config,
+      project: "EWE",
+      role: "planner",
+      folder: "261111-alpha",
+      aismRoot,
+      spawn: () => {},
+      now: NOW,
+      hex: "7788",
+    });
+    const prompt2 = fs.readFileSync(path.join(dir2, "prompt.md"), "utf8");
+    expect(prompt2).not.toContain("First instruction:");
+  });
 });

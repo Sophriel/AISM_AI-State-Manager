@@ -4,7 +4,7 @@ import path from "node:path";
 import type { AismConfig } from "./config.js";
 import { AISM_ROOT } from "./config.js";
 import type { ActiveTask, Store } from "./store.js";
-import { newActiveTask } from "./store.js";
+import { EVENT_TEXT_MAX, newActiveTask } from "./store.js";
 import type { Sessions, SessionState } from "./sessions.js";
 import type { Snapshot, TodoSnapshot } from "./artifacts.js";
 import {
@@ -27,7 +27,7 @@ export type PendingAction =
   | { kind: "pass"; n: number; text: string }
   | { kind: "todo-gate"; n: number }
   | { kind: "coder" }
-  | { kind: "done" }
+  | { kind: "done"; t: number }
   | { kind: "describe" };
 
 export type Display = "working" | "waiting" | "your-turn" | "idle" | "disconnected";
@@ -93,7 +93,7 @@ export class Orchestrator {
     onClose: (cb: () => void) => void,
   ): void {
     // stop 이벤트 기록 (W3) — 어떤 판정보다 먼저.
-    const msg = payload.last_assistant_message?.slice(0, 80);
+    const msg = payload.last_assistant_message?.slice(0, EVENT_TEXT_MAX);
     const stopRole = this.store.state.sessions[sessionKey]?.role;
     this.store.appendEvent({
       type: "stop",
@@ -178,7 +178,7 @@ export class Orchestrator {
           this.store.appendEvent({ type: "hold", sessionKey: action.sessionKey });
           break;
         case "launch":
-          this.launchRole(action.role);
+          this.launchRole(action.role, action.instruction);
           break;
         case "notify":
           this.emitNotify(action.key, action.level, action.message, action.copyText);
@@ -201,8 +201,8 @@ export class Orchestrator {
     this.broadcastState();
   }
 
-  // 역할 세션 실행 (launch Action).
-  private launchRole(role: Role): void {
+  // 역할 세션 실행 (launch Action). instruction이 있으면 첫 지시로 전달·기록 (M2 polish §3 B).
+  private launchRole(role: Role, instruction?: string): void {
     const task = this.store.state.activeTask;
     if (!task) return;
     const result = this.launch({
@@ -212,10 +212,16 @@ export class Orchestrator {
       folder: task.folder,
       aismRoot: this.aismRoot,
       store: this.store,
+      ...(instruction ? { firstInstruction: instruction } : {}),
     });
     this.sessions.register(result.sessionKey, role === "planner" && task.folder === null ? "unbound" : "working");
     this.assign(task, role, result.sessionKey);
-    this.store.appendEvent({ type: "launch", role, sessionKey: result.sessionKey });
+    this.store.appendEvent({
+      type: "launch",
+      role,
+      sessionKey: result.sessionKey,
+      ...(instruction ? { instruction: instruction.slice(0, EVENT_TEXT_MAX) } : {}),
+    });
   }
 
   // bind Action — activeTask·세션에 folder 기록.
@@ -279,6 +285,15 @@ export class Orchestrator {
         resumable: info.activeSessionId !== null,
       };
     }
+    // 마지막 clear-timeline 이후의 이벤트만 (그 이벤트 자체는 제외).
+    const all = this.store.readEvents();
+    let start = 0;
+    for (let i = all.length - 1; i >= 0; i--) {
+      if (all[i].type === "clear-timeline") {
+        start = i + 1;
+        break;
+      }
+    }
     const pa = this.pendingAction();
     const assignedState = {
       planner: task?.assigned.planner ? (this.sessions.stateOf(task.assigned.planner) ?? "detached") : null,
@@ -299,7 +314,7 @@ export class Orchestrator {
       sessions,
       projects: Object.keys(this.config.projects),
       pendingAction: pa,
-      events: this.store.readEvents().slice(-50),
+      events: all.slice(start).slice(-50),
     };
   }
 
@@ -343,7 +358,10 @@ export class Orchestrator {
       const key = task.assigned.coder;
       if (key && this.sessions.stateOf(key) === "idle") return { kind: "coder" };
     }
-    if (snapshot.status === "DONE") return { kind: "done" };
+    if (snapshot.status === "DONE") {
+      const todo = this.todoSnapshot(task.project, task.folder);
+      if (todo.latestN !== null && todo.checklistExists) return { kind: "done", t: todo.latestN };
+    }
     return null;
   }
 
@@ -381,12 +399,18 @@ export class Orchestrator {
       st === null ||
       st === "detached" ||
       st === "idle" ||
+      st === "working" ||
       (role === "planner" && task.folder === null && st === "unbound");
     if (!allowed) return { ok: false, status: 409, error: `session is ${st}` };
     const resumeId = assignedKey ? (this.store.state.sessions[assignedKey]?.activeSessionId ?? null) : null;
-    if (mode === "resume" && (task.folder === null || resumeId === null || !(st === "detached" || st === "idle"))) {
+    if (
+      mode === "resume" &&
+      (task.folder === null || resumeId === null || !(st === "detached" || st === "idle" || st === "working"))
+    ) {
       return { ok: false, status: 409, error: "cannot resume" };
     }
+    // 전달 못 한 지시가 있으면 새 세션의 첫 지시로 넘기고 바로 삭제 (M2 polish §3 B).
+    const pendingText = task.undelivered.find((u) => u.role === role)?.text;
     const result = this.launch({
       config: this.config,
       project: task.project,
@@ -395,18 +419,21 @@ export class Orchestrator {
       aismRoot: this.aismRoot,
       store: this.store,
       ...(mode === "resume" && resumeId ? { resumeSessionId: resumeId } : {}),
+      ...(pendingText ? { firstInstruction: pendingText } : {}),
     });
     this.sessions.register(
       result.sessionKey,
       mode === "resume" ? "working" : role === "planner" && task.folder === null ? "unbound" : "working",
     );
     this.assign(task, role, result.sessionKey);
+    if (pendingText) this.removeUndelivered(role);
     this.store.appendEvent({
       type: "launch",
       role,
       sessionKey: result.sessionKey,
       relaunch: true,
       ...(mode === "resume" ? { resume: true } : {}),
+      ...(pendingText ? { instruction: pendingText.slice(0, EVENT_TEXT_MAX) } : {}),
     });
     this.store.save();
     this.broadcastState();
@@ -424,6 +451,12 @@ export class Orchestrator {
     this.store.state.activeTask = null;
     this.store.appendEvent({ type: "close-task" });
     this.store.save();
+    this.broadcastState();
+  }
+
+  // POST /api/timeline/clear — 화면의 타임라인만 비운다. events.jsonl은 그대로 (M2 polish §3 C).
+  clearTimeline(): void {
+    this.store.appendEvent({ type: "clear-timeline" });
     this.broadcastState();
   }
 

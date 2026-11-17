@@ -1,11 +1,16 @@
 // G-5 — Windows 토스트 (PowerShell WinRT, ADR 0014).
+// detached로 띄우면 토스트가 표시되지 않는다 (E-005).
 import { spawn } from "node:child_process";
 import path from "node:path";
 import { AISM_ROOT } from "./config.js";
 
-// 토스트 대상 — warn 전부 + 전달 못 한 지시 + 구현 완료 (D3).
+// 토스트 대상 — warn 전부 + 전달 못 한 지시 + 체크리스트 완료 (D3, D6).
 export function shouldToast(level: "info" | "warn", key: string): boolean {
-  return level === "warn" || key.startsWith("undeliverable-") || key.startsWith("done-");
+  return (
+    level === "warn" ||
+    key.startsWith("undeliverable-") ||
+    key.startsWith("checklist-")
+  );
 }
 
 let warned = false;
@@ -22,7 +27,7 @@ export function showToast(title: string, message: string): void {
     const child = spawn(
       "powershell.exe",
       ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden", "-File", script, "-B64", b64],
-      { detached: true, stdio: "ignore" },
+      { stdio: "ignore" },
     );
     child.on("error", warnOnce);
     child.unref();

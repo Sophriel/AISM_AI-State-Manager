@@ -1,10 +1,11 @@
 // T12 — HTTP 서버. loadConfig → Store.load() → 저장된 세션 detached 초기화 → listen.
-// 라우트: /hook/stop(long-poll), /api/state, /api/events(SSE), /api/tasks/{new,relaunch,close}, 정적 서빙.
+// 라우트: /hook/stop(long-poll), /api/state, /api/events(SSE), /api/tasks/{new,relaunch,close}, /api/timeline/clear, /api/ui/window, 정적 서빙.
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import Fastify from "fastify";
 import fastifyStatic from "@fastify/static";
-import { loadConfig, configFilePath } from "./config.js";
+import { loadConfig, configFilePath, AISM_ROOT } from "./config.js";
+import { openUi, handleWindowSize, DEFAULT_WINDOW } from "./ui.js";
 import { Store } from "./store.js";
 import { Sessions } from "./sessions.js";
 import { Orchestrator } from "./orchestrator.js";
@@ -15,7 +16,8 @@ const here = path.dirname(fileURLToPath(import.meta.url)); // server/src (dev) �
 const publicDir = path.join(here, "..", "public");
 
 async function main(): Promise<void> {
-  const config = loadConfig(configFilePath());
+  const cfgPath = configFilePath();
+  const config = loadConfig(cfgPath);
   const store = new Store();
   store.load();
   const sessions = new Sessions(store, config.parkLimitSec);
@@ -94,10 +96,21 @@ async function main(): Promise<void> {
     return { ok: true };
   });
 
+  app.post("/api/timeline/clear", async () => {
+    orchestrator.clearTimeline();
+    return { ok: true };
+  });
+
+  app.post("/api/ui/window", async (request, reply) => {
+    const r = handleWindowSize(config, cfgPath, request.body);
+    return reply.code(r.status).send(r.payload);
+  });
+
   // 정적 서빙 (server/public — 웹 UI 빌드 산출물). API·훅 라우트 이후 등록.
   await app.register(fastifyStatic, { root: publicDir });
 
   await app.listen({ port: config.port, host: "127.0.0.1" });
+  openUi(config.port, config.window ?? DEFAULT_WINDOW, AISM_ROOT);
 }
 
 main().catch((err) => {
