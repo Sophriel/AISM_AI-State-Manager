@@ -120,14 +120,14 @@
 /* 컨트롤 */
 .controls {
   display: flex;
-  align-items: center;
-  gap: 10px;
-  flex-wrap: wrap;
+  flex-direction: column;
+  gap: 8px;
 }
 
-.control-group {
+.control-row {
   display: flex;
   gap: 8px;
+  align-items: center;
 }
 
 .controls select,
@@ -148,9 +148,31 @@
 }
 
 /* 타임라인 */
+.timeline-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+.timeline-header button {
+  font-size: 14px;
+  padding: 6px 12px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--text-h);
+  cursor: pointer;
+}
+
+.timeline-header button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 .timeline h2 {
   font-size: 18px;
-  margin: 0 0 8px;
+  margin: 0;
 }
 
 .timeline ul {
@@ -183,4 +205,14 @@
 .timeline li.empty {
   color: var(--text);
   font-style: italic;
+}
+
+.timeline li.collapsible {
+  cursor: pointer;
+}
+
+.timeline-body {
+  white-space: pre-wrap;
+  margin-top: 4px;
+  padding-left: 16px;
 }

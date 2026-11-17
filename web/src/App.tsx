@@ -1,10 +1,12 @@
 // T13 — 웹 UI. 첫 로드 GET /api/state, 이후 EventSource('/api/events')로 갱신.
-import { Fragment, useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
+  clearTimeline,
   closeTask,
   fetchState,
   newTask,
   relaunch,
+  saveWindowSize,
   type NotifyPayload,
   type Role,
   type State,
@@ -19,7 +21,7 @@ function canRelaunch(state: State | null, role: Role): boolean {
   if (!task) return false;
   if ((role === "verifier" || role === "coder") && task.folder === null) return false;
   const s = state.assignedState[role];
-  if (s === null || s === "detached" || s === "idle") return true;
+  if (s === null || s === "detached" || s === "idle" || s === "working") return true;
   if (role === "planner" && task.folder === null && s === "unbound") return true;
   return false;
 }
@@ -31,7 +33,7 @@ function canResume(state: State | null, role: Role): boolean {
   const key = task.assigned[role];
   if (!key) return false;
   const s = state.assignedState[role];
-  if (s !== "detached" && s !== "idle") return false;
+  if (s !== "detached" && s !== "idle" && s !== "working") return false;
   return state.sessions[key]?.resumable === true;
 }
 const ROLES = ["planner", "verifier", "coder"] as const;
@@ -109,6 +111,31 @@ function App() {
     return () => es.close();
   }, [onNotify]);
 
+  // 창 크기 자동 저장 (M2 polish §3 E) — 닫을 때 sendBeacon, 크기 변경 1초 뒤 POST.
+  useEffect(() => {
+    const onHide = () => {
+      try {
+        navigator.sendBeacon("/api/ui/window", JSON.stringify({ width: window.outerWidth, height: window.outerHeight }));
+      } catch {
+        /* ignore */
+      }
+    };
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const onResize = () => {
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => {
+        void saveWindowSize(window.outerWidth, window.outerHeight).catch(() => {});
+      }, 1000);
+    };
+    window.addEventListener("pagehide", onHide);
+    window.addEventListener("resize", onResize);
+    return () => {
+      window.removeEventListener("pagehide", onHide);
+      window.removeEventListener("resize", onResize);
+      if (timer) clearTimeout(timer);
+    };
+  }, []);
+
   // 첫 클릭 시 Notification 권한 요청.
   const requestPermission = useCallback(() => {
     if ("Notification" in window && Notification.permission === "default") {
@@ -134,18 +161,29 @@ function App() {
   };
   const handleRelaunch = (role: Role, mode: "new" | "resume") => {
     const s = state?.assignedState?.[role];
-    if (
-      (s === "idle" || s === "unbound") &&
-      !window.confirm(
-        `이전 ${role.toUpperCase()} 창이 아직 열려 있다면 닫은 뒤 진행하세요. 이전 창은 더 이상 자동으로 지시받지 않습니다.`,
+    const label = ROLE_LABEL[role];
+    if (s === "working") {
+      if (
+        !window.confirm(
+          `${label}이(가) 작업 중으로 보입니다. 창을 닫았거나 응답이 없을 때만 진행하세요. 진행하면 이전 창은 더 이상 자동으로 지시받지 않습니다.`,
+        )
       )
-    )
-      return;
+        return;
+    } else if (s === "idle" || s === "unbound") {
+      if (
+        !window.confirm(`이전 ${label} 창이 아직 열려 있다면 닫은 뒤 진행하세요. 이전 창은 더 이상 자동으로 지시받지 않습니다.`)
+      )
+        return;
+    }
     void run(() => relaunch(role, mode));
   };
   const handleClose = () => {
     if (!window.confirm("작업을 종료할까요? 모든 대기 중인 세션이 allow로 해제됩니다.")) return;
     void run(() => closeTask());
+  };
+  const handleClearTimeline = () => {
+    if (!window.confirm("타임라인을 비울까요? 화면에서만 지워지고 기록 파일(state/events.jsonl)은 그대로 남습니다.")) return;
+    void run(() => clearTimeline());
   };
 
   const activeTask = state?.activeTask ?? null;
@@ -168,7 +206,7 @@ function App() {
       />
 
       <div className="controls">
-        <div className="control-group">
+        <div className="control-row">
           <select
             value={selectValue}
             onChange={(e) => setProject(e.target.value)}
@@ -184,23 +222,23 @@ function App() {
           <button type="button" onClick={handleNewTask} disabled={!!activeTask || !project || busy}>
             새 작업
           </button>
+          <button type="button" onClick={handleClose} disabled={busy || !activeTask}>
+            작업 종료
+          </button>
         </div>
         {ROLES.map((r) => (
-          <Fragment key={r}>
+          <div className="control-row" key={r}>
             <button type="button" onClick={() => handleRelaunch(r, "new")} disabled={busy || !canRelaunch(state, r)}>
               {ROLE_LABEL[r]} 다시 띄우기
             </button>
             <button type="button" onClick={() => handleRelaunch(r, "resume")} disabled={busy || !canResume(state, r)}>
               {ROLE_LABEL[r]} 이어서 띄우기
             </button>
-          </Fragment>
+          </div>
         ))}
-        <button type="button" onClick={handleClose} disabled={busy || !activeTask}>
-          작업 종료
-        </button>
       </div>
 
-      <Timeline events={state?.events ?? []} />
+      <Timeline events={state?.events ?? []} onClear={handleClearTimeline} disabled={busy} />
     </div>
   );
 }

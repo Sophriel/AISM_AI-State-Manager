@@ -32,6 +32,7 @@ export interface TodoSnapshot {
   latestN: number | null;
   verifyExists: boolean;
   verdict: "PASS" | "REVISE" | "MALFORMED" | null;
+  checklistExists: boolean;
 }
 
 export interface ActiveTask {
@@ -48,7 +49,7 @@ export type PendingAction =
   | { kind: "pass"; n: number; text: string }
   | { kind: "todo-gate"; n: number }
   | { kind: "coder" }
-  | { kind: "done" }
+  | { kind: "done"; t: number }
   | { kind: "describe" };
 
 export interface SessionView {
@@ -118,4 +119,12 @@ export function relaunch(role: Role, mode: "new" | "resume" = "new"): Promise<vo
 
 export function closeTask(): Promise<void> {
   return postJson("/api/tasks/close", {});
+}
+
+export function clearTimeline(): Promise<void> {
+  return postJson("/api/timeline/clear", {});
+}
+
+export function saveWindowSize(width: number, height: number): Promise<void> {
+  return postJson("/api/ui/window", { width, height });
 }

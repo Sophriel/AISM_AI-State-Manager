@@ -34,7 +34,7 @@ function pendingActionText(pa: PendingAction): string {
     case "coder":
       return "CODER가 멈췄습니다 — CODER 창을 확인하세요";
     case "done":
-      return "구현 완료 — 테스트 후 작업을 종료하세요";
+      return `체크리스트로 테스트한 뒤 작업을 종료하세요 (todo-v${pa.t}-checklist.md)`;
     case "describe":
       return "PLANNER 창에서 작업을 설명하세요";
   }
