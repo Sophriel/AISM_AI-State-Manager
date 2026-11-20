@@ -25,13 +25,20 @@ npm run build
 
 M2부터 설정에 `roles.coder`(필수)와 선택 키 `toast`가 있습니다 — aism.config.example.json을 참고해 추가하세요. Windows 토스트는 Windows PowerShell 5.1(`powershell.exe`)로 띄웁니다. 선택 키 `window`(UI 창 크기)도 있습니다.
 
+프로젝트는 UI의 **프로젝트 추가**로도 등록하고, 목록에서 고른 뒤 **프로젝트 제외**로 뺄 수 있다(설정 파일 `projects`에 저장 — 제외해도 폴더·파일은 그대로). 서버 실행 중 설정 파일을 직접 고쳤다면 서버를 다시 시작해야 반영된다.
+
+`roleOverlay`(역할 오버레이 파일)에는 AISM으로 띄운 세션에만 필요한 지시(예: 역할별 쓰기 범위)를 넣는다. 프로젝트 일반 규칙·지식은 대상 레포의 CLAUDE.md에 둔다 — AISM 세션도 CLAUDE.md를 그대로 읽는다.
+
 ## 실행
 
 ```bat
-scripts\start_aism.bat
+scripts\start_server.bat    # 서버 하나 (127.0.0.1:4400)
+scripts\open_ui.bat         # UI 창 — 원하는 만큼 여러 개
 ```
 
-레포 루트로 이동 → 새 창에서 `npm start`(서버, 127.0.0.1:4400). 서버가 시작되면 Edge 앱 모드로 UI 창을 띄운다(설정 `window`의 크기, 없으면 1000×900). 창을 닫을 때 마지막 크기가 설정 파일 `window`에 저장된다(서버가 설정 파일을 2칸 들여쓰기로 다시 쓴다). UI는 AISM 전용 Edge 프로필(`state/edge-profile`)을 쓰므로 브라우저 알림 권한은 처음 한 번 다시 허용한다. Edge가 필요하다. 서버만 다시 켤 때는 환경변수 `AISM_NO_UI=1`로 창을 띄우지 않는다. 개발 중에는 `npm run dev`(서버+웹 HMR 동시 실행)를 쓴다.
+서버는 하나이고, UI 창은 여러 개를 띄울 수 있다. **창 하나 = 작업 하나** — 작업 ID 없이 열면 시작 화면이 나오고, 여기서 새 작업을 만들거나 창이 붙지 않은 진행 중 작업을 골라 이어서 본다. 서버가 꺼져 있으면 `open_ui`는 안내만 하고 끝난다(`scripts\start_server.bat`으로 먼저 서버를 띄우세요). UI는 AISM 전용 Edge 프로필(`state/edge-profile`)을 쓰므로 브라우저 알림 권한은 처음 한 번 다시 허용한다. Edge가 필요하다. 창을 닫을 때 마지막 크기가 설정 파일 `window`에 저장된다(서버가 설정 파일을 2칸 들여쓰기로 다시 쓴다). 개발 중에는 `npm run dev`(서버+웹 HMR 동시 실행)를 쓰고 Vite 주소를 직접 연다.
+
+한계: 같은 프로젝트의 두 작업이 CODER를 동시에 돌리거나, 두 작업이 같은 로컬 엔드포인트를 동시에 쓰는 것을 서버가 막지 않는다 — 사용자가 피한다(대기열·잠금은 2단계).
 
 ## 사용 흐름
 
@@ -39,7 +46,7 @@ scripts\start_aism.bat
 2. PLANNER 창에서 작업을 설명하면 PLANNER가 `plan-v1.md`를 작성하고 멈춘다.
 3. 서버가 PLANNER를 대기시키고 VERIFIER 세션을 띄운다 — VERIFIER가 `plan-vN-verify.md`에 `판정: PASS/REVISE`를 쓴다. REVISE면 PLANNER가 다음 판을 쓰고 다시 VERIFIER로(plan-v5부터는 REVISE마다 사용자 확인).
 4. PASS면 PLANNER가 `todo-vN.md`를 쓰고, 서버가 CODER 세션을 띄운다 — CODER가 todo를 검토(`todo-vN-verify.md`)하고, REVISE면 PLANNER가 todo를 고치고, PASS면 구현한다.
-5. CODER가 끝내면(Status DONE) PLANNER가 결과를 검토해 `todo-vN-checklist.md`를 쓰고 알린다(Windows 토스트). 체크리스트로 테스트한다.
+5. CODER가 끝내면(Status DONE) PLANNER가 결과를 검토해 `todo-vN-checklist.md`를 쓰고 알린다(Windows 토스트). 동시에 CODER가 커밋 계획(`todo-vN-commit.md`)을 쓴다 — CODER 창에서 허가하면 커밋한다(push는 직접). 체크리스트로 테스트한다.
 6. UI의 **작업 종료**로 작업을 끝낸다. 결정이 필요하거나 세션이 끊기면 UI 알림과 작업 카드 안내를 따른다(이어서 띄우기·다시 띄우기).
 
 플랜 폴더는 미리 만들지 말고, 새 작업을 시작한 뒤 PLANNER 창에서 만들게 한다.

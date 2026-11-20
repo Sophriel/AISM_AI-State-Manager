@@ -14,7 +14,7 @@ npm run build  # 웹 UI → server/public, 서버 → server/dist
 npm start      # 빌드 산출물 실행 (node server/dist/index.js)
 ```
 
-실행: `scripts\start_aism.bat` (서버 실행 + Edge 앱 모드로 UI 열기). 설정은 `aism.config.json` (`aism.config.example.json` 복사 후 수정).
+실행: `scripts\start_server.bat` (서버 하나) + `scripts\open_ui.bat` (UI 창 — 창 하나 = 작업 하나, 원하는 만큼 여러 개). 설정은 `aism.config.json` (`aism.config.example.json` 복사 후 수정).
 
 ## 어디에 무엇이 있나
 
@@ -25,11 +25,11 @@ npm start      # 빌드 산출물 실행 (node server/dist/index.js)
 | `docs/OPEN_QUESTIONS.md` | 미결 사항 (Q-n) |
 | `docs/decisions/` | 확정된 결정 (ADR). **뒤집으려면 새 ADR을 쓴다** |
 | `docs/experiments.md` | 핵심 가정 검증 실험 기록 (E-001~E-007, E-006은 보류). 실험 코드는 로컬 `experiments/` (git 제외) |
-| `server/` | Fastify 서버 (TypeScript). `src/`에 config·artifacts·machine·store·sessions·launcher·orchestrator·notify·toast·ui·index |
-| `web/` | React + Vite UI. `src/`에 App·api·components(TaskCard·Timeline) |
+| `server/` | Fastify 서버 (TypeScript). `src/`에 config·artifacts·machine·store·sessions·launcher·orchestrator·notify·toast·ui·projects·open-ui·open-ui-main·index |
+| `web/` | React + Vite UI. `src/`에 App·api·components(TaskCard·Timeline·ProjectForm) |
 | `hooks/stop.js` | Stop 훅 — 세션 Stop 시 서버 `/hook/stop`에 long-poll |
 | `roles/` | 범용 역할 프롬프트 (`_workflow.md`, `planner.md`, `verifier.md`, `coder.md`) |
-| `scripts/` | `start_aism.bat`(실행), `launch_session.bat`(세션 창), `write-*-bat.cjs`(CRLF 재생성), `toast.ps1`(Windows 토스트) |
+| `scripts/` | `start_server.bat`·`open_ui.bat`(실행), `launch_session.bat`(세션 창), `write-*-bat*.cjs`(CRLF 재생성), `toast.ps1`(Windows 토스트) |
 | `.claude/roles/` | 역할 세션 시스템 프롬프트 원본. `_workflow.md`가 공통 규약 |
 | `.claude/plans/` | 작업별 플랜 폴더 (git 제외) |
 
