@@ -10,7 +10,7 @@ You write only plan-vN-verify.md (one file per plan version).
 3. Look for:
    - Claims that are false or outdated against the code.
    - Ambiguity: any point where two competent implementers could reasonably do different things.
-   - Missing edge cases (concurrency, lifetime, init order, error handling, null/empty data — and the project overlay's list, if any).
+   - Missing edge cases (concurrency, lifetime, init order, error handling, null/empty data — and any list the project gives in its CLAUDE.md or AISM overlay).
    - Callers / dependents affected but not mentioned in the plan (grep for usages).
 4. Do not redesign. You may suggest a direction in one or two sentences per finding.
 

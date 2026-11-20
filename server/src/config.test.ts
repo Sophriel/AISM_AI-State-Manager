@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { describe, it, expect } from "vitest";
-import { AISM_ROOT, MANAGED_ENV, loadConfig, saveWindowSize } from "./config.js";
+import { AISM_ROOT, MANAGED_ENV, loadConfig, saveWindowSize, updateConfigFile } from "./config.js";
 
 const examplePath = path.join(AISM_ROOT, "aism.config.example.json");
 const example = loadConfig(examplePath);
@@ -249,5 +249,56 @@ describe("saveWindowSize (M2 polish §3 E)", () => {
     const p = tempConfig("{broken");
     expect(saveWindowSize(p, { width: 800, height: 600 })).toBe(false);
     expect(fs.readFileSync(p, "utf8")).toBe("{broken");
+  });
+});
+
+describe("updateConfigFile (M3 §3 D)", () => {
+  function tempConfig(content: string): string {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "aism-cfg-"));
+    const p = path.join(dir, "config.json");
+    fs.writeFileSync(p, content);
+    return p;
+  }
+
+  it("예시 설정 복사본에 프로젝트 추가 → true, 파일에 반영, loadConfig 통과", () => {
+    const p = tempConfig(fs.readFileSync(examplePath, "utf8"));
+    expect(
+      updateConfigFile(p, (d) => {
+        const projects = d.projects as Record<string, unknown>;
+        projects.NewProj = { root: "C:/tmp/newproj", plansDir: ".claude/plans", protectedPaths: [] };
+      }),
+    ).toBe(true);
+    const data = JSON.parse(fs.readFileSync(p, "utf8")) as Record<string, { NewProj?: { root: string } }>;
+    expect(data.projects.NewProj).toEqual({ root: "C:/tmp/newproj", plansDir: ".claude/plans", protectedPaths: [] });
+    expect(loadConfig(p).projects.NewProj.root).toBe("C:/tmp/newproj");
+  });
+
+  it("mutate가 projects.X = { root: 1 }(형식 오류) → false, 원본 내용 그대로, .tmp 파일 없음", () => {
+    const p = tempConfig(fs.readFileSync(examplePath, "utf8"));
+    const before = fs.readFileSync(p, "utf8");
+    expect(
+      updateConfigFile(p, (d) => {
+        const projects = d.projects as Record<string, unknown>;
+        projects.Bad = { root: 1 };
+      }),
+    ).toBe(false);
+    expect(fs.readFileSync(p, "utf8")).toBe(before);
+    expect(fs.existsSync(`${p}.tmp`)).toBe(false);
+  });
+
+  it("validate: false면 형식 오류도 저장됨", () => {
+    const p = tempConfig(fs.readFileSync(examplePath, "utf8"));
+    expect(
+      updateConfigFile(
+        p,
+        (d) => {
+          const projects = d.projects as Record<string, unknown>;
+          projects.Bad = { root: 1 };
+        },
+        { validate: false },
+      ),
+    ).toBe(true);
+    const data = JSON.parse(fs.readFileSync(p, "utf8")) as Record<string, { Bad?: unknown }>;
+    expect(data.projects.Bad).toEqual({ root: 1 });
   });
 });

@@ -22,6 +22,7 @@ export interface LaunchOptions {
   folder: string | null;
   aismRoot: string;
   store?: Store;
+  task: string | null; // 그 세션을 띄운 작업 ID (없으면 null — SessionInfo.task에 기록)
   spawn?: SpawnFn;
   now?: Date;
   hex?: string; // 4자리 hex, 기본 랜덤
@@ -122,8 +123,8 @@ export function launchSession(opts: LaunchOptions): { sessionKey: string; dir: s
   }
   fs.writeFileSync(path.join(dir, "args.txt"), argsParts.join(" ") + "\n");
 
-  // 실행 — wt.exe -w new --title "AISM · <folder|new> · <ROLE>" cmd /k <bat> <dir>.
-  const title = `AISM · ${folder ?? "new"} · ${role.toUpperCase()}`;
+  // 실행 — wt.exe -w new --title "AISM · <project>/<folder|new> · <ROLE>" cmd /k <bat> <dir>.
+  const title = `AISM · ${project}/${folder ?? "new"} · ${role.toUpperCase()}`;
   const batPath = path.join(aismRoot, "scripts", "launch_session.bat");
   const wtArgs = ["-w", "new", "--title", title, "cmd", "/k", batPath, dir];
   const spawnOpts = { detached: true, stdio: "ignore" as const };
@@ -140,6 +141,7 @@ export function launchSession(opts: LaunchOptions): { sessionKey: string; dir: s
       sessionIds: [],
       activeSessionId: null,
       switchedOnce: false,
+      task: opts.task,
     };
     opts.store.save();
   }

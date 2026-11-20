@@ -40,7 +40,11 @@ If something unexpected appears mid-way (compile error caused by the plan, a hid
 If you notice an unrelated problem: log it under `## Out of scope` and continue.
 
 ## Rules
-- Do not commit or stage.
+- Do not commit or stage unless the user approves the commit plan in this session. Never push.
 - Before controlling the user's desktop (keyboard/mouse input, clicking, closing windows, focusing apps), stop and ask the user for confirmation — say what you will do and why. Do it only if it is truly necessary and the user approves. Prefer asking the user to perform the step themselves.
 - Keep code-log.md current after each item so a new session can resume from it.
 - When all items are ticked: see Phase 2 step 4 — Status: DONE, then summarize touched files.
+
+## After DONE — commit plan
+When told to write the commit plan: inspect `git status` and `git diff` of the project, group the changes this todo made into commits (one coherent kind of change per commit; follow the project's own commit rules in its CLAUDE.md if any), and write todo-vT-commit.md in the format of the workflow contract. List unrelated changes (present before this task) under "## 제외" and do not commit them. Then stop and wait. Do not commit.
+When the user approves in this session, make exactly those commits (stage only the listed files), then append "## 커밋 로그" with one line per commit: `- <short hash> <first line of message>`. Do not push. If the user asks for changes to the plan, edit the plan first.

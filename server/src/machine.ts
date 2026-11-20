@@ -1,5 +1,5 @@
 // T5 — 상태 머신 (plan-v3 §3.6). 순수 함수: 파일·시간·네트워크 접근 금지.
-// 판정표 행 0~11 + 5t·c1~c9(M2)를 그 순서대로 적용한다.
+// 판정표 행 0~11 + 5t·c1~c9(M2, c9 커밋 계획 M3)를 그 순서대로 적용한다.
 import type { Snapshot, TodoSnapshot } from "./artifacts.js";
 
 export type Role = "planner" | "verifier" | "coder";
@@ -24,6 +24,7 @@ export interface MachineInput {
   peers: { planner?: PeerView; verifier?: PeerView; coder?: PeerView };
   record: TaskRecord;
   config: { confirmFromVersion: number; maxConsecutiveBlocks: number };
+  projectIsGit: boolean; // 활성 작업 프로젝트가 git 레포 (M3)
 }
 
 export type Reply = { action: "allow" } | { action: "block"; reason: string };
@@ -73,11 +74,15 @@ export function instructionBlocked(N: number): string {
 export function instructionChecklist(N: number, T: number): string {
   return `plan-v${N}.md가 DONE이다. code-log.md와 변경 내용을 검토하고 todo-v${T}-checklist.md(테스트 방법·확인 항목)를 작성해. 검토 중 발견한 문제는 체크리스트 맨 위 "## 검토 메모"에 적어.`;
 }
+// M3 §3 B — 커밋 분할 계획 지시.
+export function instructionCommitPlan(T: number): string {
+  return `구현이 끝났다. 변경 사항을 커밋 단위로 나눈 계획을 todo-v${T}-commit.md에 작성해. 사용자가 이 창에서 허가하기 전에는 커밋하지 마.`;
+}
 
 const part = (v: string | number | null): string => (v === null ? "null" : String(v));
 
 export function evaluate(input: MachineInput): Action[] {
-  const { sender, taskActive, snapshot, todo, newPlanFolders, peers, record, config } = input;
+  const { sender, taskActive, snapshot, todo, newPlanFolders, peers, record, config, projectIsGit } = input;
   const actions: Action[] = [];
   const notified = new Set(record.notified);
   const instructed = new Set(record.instructed);
@@ -350,16 +355,33 @@ export function evaluate(input: MachineInput): Action[] {
       return finish();
     }
     if (snapshot.status === "DONE") {
-      // c9
-      allow(sender.sessionKey);
+      // c9 — 체크리스트(PLANNER)와 커밋 계획(CODER)을 병렬로 (M3 §3 B).
       notify(`done-v${part(N)}`, "info", `구현 완료 (plan-v${part(N)}) — 테스트 후 작업을 종료하세요`);
-      const key = `checklist-v${part(T)}`;
-      if (T !== null && !instructed.has(key) && !todo.checklistExists) {
+      const ckey = `checklist-v${part(T)}`;
+      if (T !== null && !instructed.has(ckey) && !todo.checklistExists) {
         if (deliver("planner", instructionChecklist(N ?? 0, T)) === "blocked") {
-          instructed.add(key);
+          instructed.add(ckey);
           dirty = true;
         }
       }
+      if (T === null || !projectIsGit) {
+        allow(sender.sessionKey);
+        return finish();
+      }
+      if (todo.commitPlanExists) {
+        allow(sender.sessionKey);
+        notify(`commit-plan-v${T}`, "info", `todo-v${T}-commit.md 커밋 계획 작성 완료 — CODER 창에서 확인하고 허가하세요`);
+        return finish();
+      }
+      const pkey = `commitplan-v${T}`;
+      if (!instructed.has(pkey)) {
+        if (block(sender.sessionKey, instructionCommitPlan(T))) {
+          instructed.add(pkey);
+          dirty = true;
+        }
+        return finish();
+      }
+      allow(sender.sessionKey);
       return finish();
     }
     // 그 외 → 행 11로 낙하.

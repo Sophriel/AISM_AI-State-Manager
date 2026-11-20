@@ -5,7 +5,8 @@ import path from "node:path";
 import { AISM_ROOT } from "./config.js";
 import type { TaskRecord, Role } from "./machine.js";
 
-export interface ActiveTask {
+export interface Task {
+  id: string;
   project: string;
   folder: string | null;
   startedAt: number;
@@ -22,6 +23,7 @@ export interface SessionInfo {
   sessionIds: string[];
   activeSessionId: string | null;
   switchedOnce: boolean;
+  task: string | null; // 그 세션을 띄운 작업. 서버 밖 세션·옛 세션은 null.
 }
 
 export interface Undelivered {
@@ -30,7 +32,7 @@ export interface Undelivered {
 }
 
 export interface State {
-  activeTask: ActiveTask | null;
+  tasks: Record<string, Task>;
   sessions: Record<string, SessionInfo>;
 }
 
@@ -39,12 +41,20 @@ export type EventType = "stop" | "reply" | "launch" | "bind" | "notify" | "detac
 export const EVENT_TEXT_MAX = 2000; // 이벤트에 저장하는 응답·지시 문구 최대 길이 (M2 polish §3 A)
 
 const emptyState = (): State => ({
-  activeTask: null,
+  tasks: {},
   sessions: {},
 });
 
-export function newActiveTask(project: string, startedAt: number): ActiveTask {
+// 작업 ID — t-<YYYYMMDD>-<HHmmss>-<hex> (launcher makeSessionKey와 같은 시각 형식, 로컬 시간).
+export function makeTaskId(now: Date, hex: string): string {
+  const pad = (n: number) => String(n).padStart(2, "0");
+  const ts = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
+  return `t-${ts}-${hex}`;
+}
+
+export function newTask(id: string, project: string, startedAt: number): Task {
   return {
+    id,
     project,
     folder: null,
     startedAt,
@@ -62,18 +72,22 @@ const isStrArr = (v: unknown): v is string[] => Array.isArray(v) && v.every((x) 
 const isNumMap = (v: unknown): v is Record<string, number> =>
   isObj(v) && Object.values(v).every((x) => typeof x === "number");
 
-// plan-v3 §3 A "현재 형식" 검사 — 키가 정확히 일치하고 타입이 맞아야 true.
+// "현재 형식" 검사 — 키가 정확히 일치하고 타입이 맞아야 true.
+// 최상위 키는 정확히 tasks·sessions, 각 작업 키 7개(id 포함)·tasks[k].id === k, 각 세션에 task(string|null).
+// 옛 형식(activeTask)은 이 검사를 통과하지 못해 기존 규칙대로 버려지고 경고한다.
 export function isCurrentState(x: unknown): x is State {
   if (!isObj(x)) return false;
   const topKeys = Object.keys(x);
-  if (topKeys.length !== 2 || !topKeys.includes("activeTask") || !topKeys.includes("sessions")) return false;
+  if (topKeys.length !== 2 || !topKeys.includes("tasks") || !topKeys.includes("sessions")) return false;
 
-  const t = x.activeTask;
-  if (t !== null) {
+  const tasks = x.tasks;
+  if (!isObj(tasks)) return false;
+  for (const [k, t] of Object.entries(tasks)) {
     if (!isObj(t)) return false;
     const tKeys = Object.keys(t);
-    const expectedT = ["project", "folder", "startedAt", "assigned", "record", "undelivered"];
-    if (tKeys.length !== expectedT.length || !expectedT.every((k) => tKeys.includes(k))) return false;
+    const expectedT = ["id", "project", "folder", "startedAt", "assigned", "record", "undelivered"];
+    if (tKeys.length !== expectedT.length || !expectedT.every((key) => tKeys.includes(key))) return false;
+    if (t.id !== k) return false;
     if (typeof t.project !== "string") return false;
     if (t.folder !== null && typeof t.folder !== "string") return false;
     if (typeof t.startedAt !== "number") return false;
@@ -83,8 +97,8 @@ export function isCurrentState(x: unknown): x is State {
     const aKeys = Object.keys(a);
     if (aKeys.length !== 3 || !aKeys.includes("planner") || !aKeys.includes("verifier") || !aKeys.includes("coder"))
       return false;
-    for (const k of ["planner", "verifier", "coder"]) {
-      const v = a[k];
+    for (const key of ["planner", "verifier", "coder"]) {
+      const v = a[key];
       if (v !== null && typeof v !== "string") return false;
     }
 
@@ -118,8 +132,17 @@ export function isCurrentState(x: unknown): x is State {
   for (const info of Object.values(s)) {
     if (!isObj(info)) return false;
     const sKeys = Object.keys(info);
-    const expectedS = ["role", "project", "folder", "launchedAt", "sessionIds", "activeSessionId", "switchedOnce"];
-    if (sKeys.length !== expectedS.length || !expectedS.every((k) => sKeys.includes(k))) return false;
+    const expectedS = [
+      "role",
+      "project",
+      "folder",
+      "launchedAt",
+      "sessionIds",
+      "activeSessionId",
+      "switchedOnce",
+      "task",
+    ];
+    if (sKeys.length !== expectedS.length || !expectedS.every((key) => sKeys.includes(key))) return false;
     if (!["planner", "verifier", "coder"].includes(info.role as string)) return false;
     if (typeof info.project !== "string") return false;
     if (info.folder !== null && typeof info.folder !== "string") return false;
@@ -127,6 +150,7 @@ export function isCurrentState(x: unknown): x is State {
     if (!isStrArr(info.sessionIds)) return false;
     if (info.activeSessionId !== null && typeof info.activeSessionId !== "string") return false;
     if (typeof info.switchedOnce !== "boolean") return false;
+    if (info.task !== null && typeof info.task !== "string") return false;
   }
 
   return true;
@@ -192,14 +216,41 @@ export class Store {
 
   // events.jsonl 전체를 배열로 읽는다 (파일 없으면 빈 배열).
   readEvents(): Array<Record<string, unknown>> {
+    return this.readJsonl(this.eventsPath);
+  }
+
+  private readJsonl(p: string): Array<Record<string, unknown>> {
     try {
-      const raw = fs.readFileSync(this.eventsPath, "utf8");
+      const raw = fs.readFileSync(p, "utf8");
       return raw
         .split(/\r?\n/)
         .filter((l) => l.trim() !== "")
         .map((l) => JSON.parse(l) as Record<string, unknown>);
     } catch {
       return [];
+    }
+  }
+
+  // tasks/<taskId>/events.jsonl에 한 줄을 추가한다 (appendEvent와 같은 형식, ts 미지정 시 현재 시각).
+  appendTaskEvent(taskId: string, e: { type: EventType } & Record<string, unknown>): void {
+    const dir = path.join(this.dir, "tasks", taskId);
+    fs.mkdirSync(dir, { recursive: true });
+    const payload: Record<string, unknown> = { ts: (e as { ts?: number }).ts ?? Date.now(), ...e };
+    fs.appendFileSync(path.join(dir, "events.jsonl"), JSON.stringify(payload) + "\n", "utf8");
+  }
+
+  // tasks/<taskId>/events.jsonl 전체를 배열로 읽는다 (파일 없으면 빈 배열).
+  readTaskEvents(taskId: string): Array<Record<string, unknown>> {
+    return this.readJsonl(path.join(this.dir, "tasks", taskId, "events.jsonl"));
+  }
+
+  // 세션의 이벤트를 기록 — 그 세션이 배정된 작업(state.tasks에 존재)이 있으면 그 작업 파일, 없으면 전역 events.jsonl.
+  appendSessionEvent(sessionKey: string, e: { type: EventType } & Record<string, unknown>): void {
+    const taskId = this.state.sessions[sessionKey]?.task;
+    if (taskId && this.state.tasks[taskId]) {
+      this.appendTaskEvent(taskId, e);
+    } else {
+      this.appendEvent(e);
     }
   }
 }

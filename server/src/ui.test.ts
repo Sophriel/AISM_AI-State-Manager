@@ -1,7 +1,7 @@
 // T8 완료 조건 — openUi spawn 인자·AISM_NO_UI, handleWindowSize 본문·검증·저장 분기.
 import path from "node:path";
-import { describe, it, expect } from "vitest";
-import { openUi, handleWindowSize, DEFAULT_WINDOW, type UiSpawn } from "./ui.js";
+import { describe, it, expect, vi } from "vitest";
+import { openUi, handleWindowSize, waitForExit, type UiSpawn } from "./ui.js";
 import type { AismConfig } from "./config.js";
 
 function makeConfig(window?: { width: number; height: number }): AismConfig {
@@ -27,9 +27,9 @@ describe("openUi", () => {
     const calls: { cmd: string; args: string[] }[] = [];
     const spawn: UiSpawn = (cmd, args) => {
       calls.push({ cmd, args });
-      return { on: () => {}, unref: () => {} };
+      return { on: () => {}, once: () => {}, unref: () => {} };
     };
-    openUi(4400, { width: 800, height: 600 }, "C:/aism", { spawn, env: {} });
+    openUi(4400, { width: 800, height: 600 }, "C:/aism", { spawn });
 
     expect(calls).toHaveLength(1);
     expect(calls[0].cmd).toBe("cmd.exe");
@@ -44,14 +44,62 @@ describe("openUi", () => {
     ]);
   });
 
-  it("AISM_NO_UI=1이면 호출 안 됨", () => {
-    let called = false;
+  it("주입 spawn이 돌려준 child를 그대로 반환", () => {
+    const fakeChild = { on: () => {}, once: () => {}, unref: () => {} };
+    const spawn: UiSpawn = () => fakeChild;
+    const r = openUi(4400, { width: 800, height: 600 }, "C:/aism", { spawn });
+    expect(r).toBe(fakeChild);
+  });
+
+  it("spawn이 throw하면 null 반환", () => {
     const spawn: UiSpawn = () => {
-      called = true;
-      return { on: () => {}, unref: () => {} };
+      throw new Error("no cmd");
     };
-    openUi(4400, DEFAULT_WINDOW, "C:/aism", { spawn, env: { AISM_NO_UI: "1" } });
-    expect(called).toBe(false);
+    const r = openUi(4400, { width: 800, height: 600 }, "C:/aism", { spawn });
+    expect(r).toBeNull();
+  });
+});
+
+describe("waitForExit", () => {
+  function makeFakeChild() {
+    let exitCb: (() => void) | null = null;
+    let errorCb: ((e: Error) => void) | null = null;
+    const child = {
+      on: (ev: string, cb: unknown) => {
+        if (ev === "error") errorCb = cb as (e: Error) => void;
+      },
+      once: (ev: string, cb: unknown) => {
+        if (ev === "exit") exitCb = cb as () => void;
+      },
+      unref: () => {},
+    };
+    return { child, fireExit: () => exitCb?.(), fireError: () => errorCb?.(new Error("x")) };
+  }
+
+  it("exit 발생 시 resolve", async () => {
+    const { child, fireExit } = makeFakeChild();
+    const p = waitForExit(child);
+    fireExit();
+    await p;
+  });
+
+  it("error 발생 시 resolve", async () => {
+    const { child, fireError } = makeFakeChild();
+    const p = waitForExit(child);
+    fireError();
+    await p;
+  });
+
+  it("이벤트 없음 → 타임아웃(5000ms) 후 resolve", async () => {
+    vi.useFakeTimers();
+    try {
+      const { child } = makeFakeChild();
+      const p = waitForExit(child);
+      vi.advanceTimersByTime(5000);
+      await p;
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

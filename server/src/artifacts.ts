@@ -98,6 +98,7 @@ export interface TodoSnapshot {
   verifyExists: boolean;
   verdict: "PASS" | "REVISE" | "MALFORMED" | null;
   checklistExists: boolean; // todo-v<latestN>-checklist.md 존재 여부 (M2 polish §3 H)
+  commitPlanExists: boolean; // todo-v<latestN>-commit.md 존재 (M3)
 }
 
 const TODO_RE = /^todo-v(\d+)\.md$/;
@@ -107,7 +108,7 @@ export function readTodoSnapshot(taskDir: string): TodoSnapshot {
   try {
     entries = fs.readdirSync(taskDir);
   } catch {
-    return { latestN: null, verifyExists: false, verdict: null, checklistExists: false };
+    return { latestN: null, verifyExists: false, verdict: null, checklistExists: false, commitPlanExists: false };
   }
 
   // 최신 T = ^todo-v(\d+)\.md$ 중 최대 (checklist·notes·verify는 매칭 안 됨).
@@ -121,20 +122,23 @@ export function readTodoSnapshot(taskDir: string): TodoSnapshot {
   }
 
   if (latestN === null) {
-    return { latestN: null, verifyExists: false, verdict: null, checklistExists: false };
+    return { latestN: null, verifyExists: false, verdict: null, checklistExists: false, commitPlanExists: false };
   }
 
   const { exists, verdict } = readVerdict(path.join(taskDir, `todo-v${latestN}-verify.md`));
+  const commitPath = path.join(taskDir, `todo-v${latestN}-commit.md`);
+  const commitPlanExists = fs.existsSync(commitPath);
   return {
     latestN,
     verifyExists: exists,
     verdict,
     checklistExists: fs.existsSync(path.join(taskDir, `todo-v${latestN}-checklist.md`)),
+    commitPlanExists,
   };
 }
 
 export function emptyTodoSnapshot(): TodoSnapshot {
-  return { latestN: null, verifyExists: false, verdict: null, checklistExists: false };
+  return { latestN: null, verifyExists: false, verdict: null, checklistExists: false, commitPlanExists: false };
 }
 
 // plansDir의 직속 폴더 중 plan-v1.md 생성 시각(birthtimeMs)이 sinceMs 이후인 폴더명 목록.

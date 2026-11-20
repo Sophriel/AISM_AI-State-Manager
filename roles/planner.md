@@ -15,7 +15,7 @@ Create `<plans-root>/<YYMMDD>-<slug>/` (plans root from your AISM context header
 1. 목표 / 비목표
 2. 현재 구조 (relevant classes, files, call flow — with file paths)
 3. 설계 (what changes, where, why; alternatives considered and why rejected)
-4. 엣지 케이스 — check at least: (concurrency, lifetime, init order, error handling, null/empty data — and the project overlay's list, if any).
+4. 엣지 케이스 — check at least: (concurrency, lifetime, init order, error handling, null/empty data — and any list the project gives in its CLAUDE.md or AISM overlay).
 5. 미결 사항 — every assumption you could not confirm in code, listed explicitly.
 6. 결정 필요 / 결정 기록 (only if any)
 7. Changelog

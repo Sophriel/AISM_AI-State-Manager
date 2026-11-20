@@ -23,11 +23,21 @@ PLANNER creates the folder when a new task starts.
 | code-log.md           | CODER   | read                  | |
 | todo-vN-checklist.md  | PLANNER   | anyone ticks boxes    | test checklist for what todo-vN implemented (how to test, what to confirm) |
 | todo-vN-notes.md      | PLANNER   | read                  | findings and fixes from testing todo-vN's result (user or CODER reports, PLANNER records) — input to the next plan version |
+| todo-vN-commit.md     | CODER   | read                  | commit split plan for what todo-vN implemented, then the commit log after the user approves |
 
 Never edit a file you do not own (except: CODER ticking the latest todo's boxes and setting the Status line).
 "Latest plan" / "latest todo" = the file with the highest N.
 
 Test documents follow the todo version they test: write `todo-vN-checklist.md` before testing and record findings in `todo-vN-notes.md` after (N = the todo version that was implemented). Do not invent other names for these.
+
+Commit plan format (todo-vN-commit.md, written by CODER after DONE when the project is a git repo):
+
+    # todo-vN 커밋 계획
+    ## 커밋 1
+    - 메시지: <commit message>
+    - 파일: <path>, <path>
+    ## 제외            (changes not made by this todo — not committed)
+    ## 커밋 로그        (appended after the user approves: - <short hash> <first line of message>)
 
 
 ## Status line

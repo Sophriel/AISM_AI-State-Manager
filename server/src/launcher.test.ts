@@ -78,6 +78,7 @@ describe("launchSession", () => {
       role: "planner",
       folder: "261111-alpha",
       aismRoot,
+      task: null,
       spawn,
       now: NOW,
       hex: "a1b2",
@@ -126,13 +127,13 @@ describe("launchSession", () => {
     );
     expect(argsTxt).not.toContain("Write(");
 
-    // spawn 인자.
+    // spawn 인자 — 창 제목 AISM · <project>/<folder|new> · <ROLE>.
     expect(spawnCall?.cmd).toBe("wt.exe");
     expect(spawnCall?.args).toEqual([
       "-w",
       "new",
       "--title",
-      "AISM · 261111-alpha · PLANNER",
+      "AISM · EWE/261111-alpha · PLANNER",
       "cmd",
       "/k",
       path.join(aismRoot, "scripts", "launch_session.bat"),
@@ -149,6 +150,7 @@ describe("launchSession", () => {
       role: "verifier",
       folder: "261111-alpha",
       aismRoot,
+      task: null,
       spawn: () => {},
       now: NOW,
       hex: "c3d4",
@@ -177,6 +179,7 @@ describe("launchSession", () => {
       role: "planner",
       folder: null,
       aismRoot,
+      task: null,
       spawn: () => {},
       now: NOW,
       hex: "e5f6",
@@ -190,7 +193,7 @@ describe("launchSession", () => {
     expect(argsTxt).not.toContain("AISM task:");
   });
 
-  it("Store에 세션 등록", () => {
+  it("Store에 세션 등록 — SessionInfo.task 기록", () => {
     const config = makeConfig();
     const store = new Store(storeDir);
     const { sessionKey } = launchSession({
@@ -199,6 +202,7 @@ describe("launchSession", () => {
       role: "verifier",
       folder: "261111-alpha",
       aismRoot,
+      task: "t-1",
       spawn: () => {},
       now: NOW,
       hex: "a9b8",
@@ -214,6 +218,7 @@ describe("launchSession", () => {
       sessionIds: [],
       activeSessionId: null,
       switchedOnce: false,
+      task: "t-1",
     });
   });
 
@@ -225,6 +230,7 @@ describe("launchSession", () => {
       role: "coder",
       folder: "261111-alpha",
       aismRoot,
+      task: null,
       spawn: () => {},
       now: NOW,
       hex: "1122",
@@ -244,6 +250,7 @@ describe("launchSession", () => {
       role: "planner",
       folder: "261111-alpha",
       aismRoot,
+      task: null,
       spawn: () => {},
       now: NOW,
       hex: "3344",
@@ -262,6 +269,7 @@ describe("launchSession", () => {
       role: "planner",
       folder: "261111-alpha",
       aismRoot,
+      task: null,
       spawn: () => {},
       now: NOW,
       hex: "5566",
@@ -278,6 +286,7 @@ describe("launchSession", () => {
       role: "planner",
       folder: "261111-alpha",
       aismRoot,
+      task: null,
       spawn: () => {},
       now: NOW,
       hex: "7788",

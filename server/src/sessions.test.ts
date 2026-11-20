@@ -91,7 +91,7 @@ describe("Sessions", () => {
     const sessions = new Sessions(store, 3300, {
       setTimer,
       clearTimer,
-      onNotify: (key) => notifies.push(key),
+      onNotify: (_sessionKey, key) => notifies.push(key),
     });
 
     // s1(활성) Stop → 파킹.

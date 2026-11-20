@@ -1,11 +1,11 @@
 // T12 — HTTP 서버. loadConfig → Store.load() → 저장된 세션 detached 초기화 → listen.
-// 라우트: /hook/stop(long-poll), /api/state, /api/events(SSE), /api/tasks/{new,relaunch,close}, /api/timeline/clear, /api/ui/window, 정적 서빙.
+// 라우트: /hook/stop(long-poll), /api/state, /api/events(SSE), /api/tasks/{new,relaunch,close}, /api/timeline/clear, /api/projects{,/remove}, /api/ui/window, 정적 서빙.
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import Fastify from "fastify";
 import fastifyStatic from "@fastify/static";
-import { loadConfig, configFilePath, AISM_ROOT } from "./config.js";
-import { openUi, handleWindowSize, DEFAULT_WINDOW } from "./ui.js";
+import { loadConfig, configFilePath } from "./config.js";
+import { handleWindowSize } from "./ui.js";
 import { Store } from "./store.js";
 import { Sessions } from "./sessions.js";
 import { Orchestrator } from "./orchestrator.js";
@@ -25,7 +25,7 @@ async function main(): Promise<void> {
   for (const key of Object.keys(store.state.sessions)) {
     sessions.register(key, "detached");
   }
-  const orchestrator = new Orchestrator({ config, store, sessions });
+  const orchestrator = new Orchestrator({ config, store, sessions, configPath: cfgPath });
   const hub = orchestrator.getHub();
 
   const app = Fastify();
@@ -52,9 +52,11 @@ async function main(): Promise<void> {
     orchestrator.handleStop(body.sessionKey, body.payload ?? {}, sendReply, onClose);
   });
 
-  app.get("/api/state", async () => orchestrator.getState());
+  app.get("/api/state", async (request) =>
+    orchestrator.getState(((request.query as { task?: string }) ?? {}).task ?? null),
+  );
 
-  // GET /api/events — SSE. 이벤트: state(전체 상태), notify.
+  // GET /api/events — SSE. query.task 있으면 그 작업 채널, 없으면 lobby(시작 화면). 이벤트: state, notify.
   app.get("/api/events", (request, reply) => {
     reply.hijack();
     const raw = reply.raw;
@@ -70,35 +72,59 @@ async function main(): Promise<void> {
       },
       close: () => raw.end(),
     };
-    hub.add(client);
-    request.raw.on("close", () => hub.remove(client));
+    const task = ((request.query as { task?: string }) ?? {}).task ?? null;
+    hub.add(client, task);
+    orchestrator.notifyAttachChange();
+    request.raw.on("close", () => {
+      hub.remove(client);
+      orchestrator.notifyAttachChange();
+    });
   });
 
   app.post("/api/tasks/new", async (request, reply) => {
     const { project } = (request.body ?? {}) as { project?: string };
     if (!project) return reply.code(400).send({ error: "missing project" });
     const result = orchestrator.newTask(project);
-    return reply.code(result.status).send(result.ok ? { ok: true } : { error: result.error });
+    return reply.code(result.status).send(result.ok ? { ok: true, taskId: result.taskId } : { error: result.error });
   });
 
   app.post("/api/tasks/relaunch", async (request, reply) => {
-    const { role, mode } = (request.body ?? {}) as { role?: "planner" | "verifier" | "coder"; mode?: string };
+    const { task, role, mode } = (request.body ?? {}) as {
+      task?: string;
+      role?: "planner" | "verifier" | "coder";
+      mode?: string;
+    };
+    if (typeof task !== "string") return reply.code(400).send({ error: "missing task" });
     if (role !== "planner" && role !== "verifier" && role !== "coder")
       return reply.code(400).send({ error: "invalid role" });
     if (mode !== undefined && mode !== "new" && mode !== "resume")
       return reply.code(400).send({ error: "invalid mode" });
-    const result = orchestrator.relaunch(role, (mode as "new" | "resume" | undefined) ?? "new");
+    const result = orchestrator.relaunch(task, role, (mode as "new" | "resume" | undefined) ?? "new");
     return reply.code(result.status).send(result.ok ? { ok: true } : { error: result.error });
   });
 
-  app.post("/api/tasks/close", async () => {
-    orchestrator.closeTask();
-    return { ok: true };
+  app.post("/api/tasks/close", async (request, reply) => {
+    const { task } = (request.body ?? {}) as { task?: string };
+    if (typeof task !== "string") return reply.code(400).send({ error: "missing task" });
+    const result = orchestrator.closeTask(task);
+    return reply.code(result.status).send(result.ok ? { ok: true } : { error: result.error });
   });
 
-  app.post("/api/timeline/clear", async () => {
-    orchestrator.clearTimeline();
-    return { ok: true };
+  app.post("/api/timeline/clear", async (request, reply) => {
+    const { task } = (request.body ?? {}) as { task?: string };
+    if (typeof task !== "string") return reply.code(400).send({ error: "missing task" });
+    const result = orchestrator.clearTimeline(task);
+    return reply.code(result.status).send(result.ok ? { ok: true } : { error: result.error });
+  });
+
+  app.post("/api/projects", async (request, reply) => {
+    const r = orchestrator.addProject(request.body);
+    return reply.code(r.status).send(r.payload);
+  });
+
+  app.post("/api/projects/remove", async (request, reply) => {
+    const r = orchestrator.removeProject(request.body);
+    return reply.code(r.status).send(r.payload);
   });
 
   app.post("/api/ui/window", async (request, reply) => {
@@ -109,8 +135,15 @@ async function main(): Promise<void> {
   // 정적 서빙 (server/public — 웹 UI 빌드 산출물). API·훅 라우트 이후 등록.
   await app.register(fastifyStatic, { root: publicDir });
 
-  await app.listen({ port: config.port, host: "127.0.0.1" });
-  openUi(config.port, config.window ?? DEFAULT_WINDOW, AISM_ROOT);
+  try {
+    await app.listen({ port: config.port, host: "127.0.0.1" });
+  } catch (err) {
+    if ((err as { code?: string }).code === "EADDRINUSE") {
+      console.log(`포트 ${config.port}가 사용 중입니다 — 이미 AISM 서버가 켜져 있으면 UI는 scripts\\open_ui.bat으로 여세요.`);
+      process.exit(1);
+    }
+    throw err;
+  }
 }
 
 main().catch((err) => {

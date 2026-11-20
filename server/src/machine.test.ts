@@ -13,6 +13,7 @@ import {
   instructionImplement,
   instructionBlocked,
   instructionChecklist,
+  instructionCommitPlan,
   type MachineInput,
   type Action,
 } from "./machine.js";
@@ -22,11 +23,12 @@ function input(overrides: Partial<MachineInput> = {}): MachineInput {
     sender: { sessionKey: "planner-1", role: "planner", bound: true },
     taskActive: true,
     snapshot: { latestN: 3, status: "IN_REVIEW", verifyExists: false, verdict: null },
-    todo: { latestN: null, verifyExists: false, verdict: null, checklistExists: false },
+    todo: { latestN: null, verifyExists: false, verdict: null, checklistExists: false, commitPlanExists: false },
     newPlanFolders: [],
     peers: {},
     record: { notified: [], consecutiveBlocks: {}, instructed: [] },
     config: { confirmFromVersion: 5, maxConsecutiveBlocks: 3 },
+    projectIsGit: false,
     ...overrides,
   };
 }
@@ -226,7 +228,7 @@ describe("행 5 — APPROVED / TODO_READY / 그 이후 (W5)", () => {
     const actions = evaluate(
       input({
         snapshot: { latestN: 3, status: "TODO_READY", verifyExists: true, verdict: "PASS" },
-        todo: { latestN: 1, verifyExists: false, verdict: null, checklistExists: false },
+        todo: { latestN: 1, verifyExists: false, verdict: null, checklistExists: false, commitPlanExists: false },
       }),
     );
     expect(actions.some((a) => a.kind === "hold" && a.sessionKey === "planner-1")).toBe(true);
@@ -237,7 +239,7 @@ describe("행 5 — APPROVED / TODO_READY / 그 이후 (W5)", () => {
     const actions = evaluate(
       input({
         snapshot: { latestN: 3, status: "TODO_READY", verifyExists: true, verdict: "PASS" },
-        todo: { latestN: 1, verifyExists: false, verdict: null, checklistExists: false },
+        todo: { latestN: 1, verifyExists: false, verdict: null, checklistExists: false, commitPlanExists: false },
         peers: { coder: { sessionKey: "coder-1", state: "parked" } },
       }),
     );
@@ -250,7 +252,7 @@ describe("행 5 — APPROVED / TODO_READY / 그 이후 (W5)", () => {
     const actions = evaluate(
       input({
         snapshot: { latestN: 3, status: "TODO_READY", verifyExists: true, verdict: "PASS" },
-        todo: { latestN: 1, verifyExists: true, verdict: "PASS", checklistExists: false },
+        todo: { latestN: 1, verifyExists: true, verdict: "PASS", checklistExists: false, commitPlanExists: false },
       }),
     );
     expect(actions).toEqual([{ kind: "reply", sessionKey: "planner-1", reply: { action: "allow" } }]);
@@ -269,7 +271,7 @@ describe("행 5 — APPROVED / TODO_READY / 그 이후 (W5)", () => {
     const actions = evaluate(
       input({
         snapshot: { latestN: 3, status: "DONE", verifyExists: true, verdict: "PASS" },
-        todo: { latestN: 1, verifyExists: true, verdict: "PASS", checklistExists: true },
+        todo: { latestN: 1, verifyExists: true, verdict: "PASS", checklistExists: true, commitPlanExists: false },
       }),
     );
     expect(allowTo(actions, "planner-1")).toBe(true);
@@ -281,7 +283,7 @@ describe("행 5 — APPROVED / TODO_READY / 그 이후 (W5)", () => {
     const actions = evaluate(
       input({
         snapshot: { latestN: 3, status: "DONE", verifyExists: true, verdict: "PASS" },
-        todo: { latestN: 1, verifyExists: true, verdict: "PASS", checklistExists: false },
+        todo: { latestN: 1, verifyExists: true, verdict: "PASS", checklistExists: false, commitPlanExists: false },
       }),
     );
     expect(actions).toEqual([{ kind: "reply", sessionKey: "planner-1", reply: { action: "allow" } }]);
@@ -513,7 +515,7 @@ describe("CODER 행 c1~c9", () => {
       input({
         sender: coder,
         snapshot: { latestN: 3, status: "TODO_READY", verifyExists: true, verdict: "PASS" },
-        todo: { latestN: 1, verifyExists: false, verdict: null, checklistExists: false },
+        todo: { latestN: 1, verifyExists: false, verdict: null, checklistExists: false, commitPlanExists: false },
       }),
     );
     expect(allowTo(actions, "coder-1")).toBe(true);
@@ -526,7 +528,7 @@ describe("CODER 행 c1~c9", () => {
       input({
         sender: coder,
         snapshot: { latestN: 3, status: "TODO_READY", verifyExists: true, verdict: "PASS" },
-        todo: { latestN: 1, verifyExists: true, verdict: "REVISE", checklistExists: false },
+        todo: { latestN: 1, verifyExists: true, verdict: "REVISE", checklistExists: false, commitPlanExists: false },
         peers: { planner: { sessionKey: "planner-1", state: "parked" } },
       }),
     );
@@ -540,7 +542,7 @@ describe("CODER 행 c1~c9", () => {
       input({
         sender: coder,
         snapshot: { latestN: 3, status: "TODO_READY", verifyExists: true, verdict: "PASS" },
-        todo: { latestN: 5, verifyExists: true, verdict: "REVISE", checklistExists: false },
+        todo: { latestN: 5, verifyExists: true, verdict: "REVISE", checklistExists: false, commitPlanExists: false },
         peers: { planner: { sessionKey: "planner-1", state: "parked" } },
       }),
     );
@@ -555,7 +557,7 @@ describe("CODER 행 c1~c9", () => {
       input({
         sender: coder,
         snapshot: { latestN: 3, status: "TODO_READY", verifyExists: true, verdict: "PASS" },
-        todo: { latestN: 1, verifyExists: true, verdict: "MALFORMED", checklistExists: false },
+        todo: { latestN: 1, verifyExists: true, verdict: "MALFORMED", checklistExists: false, commitPlanExists: false },
       }),
     );
     const b = blockTo(actions, "coder-1");
@@ -567,7 +569,7 @@ describe("CODER 행 c1~c9", () => {
       input({
         sender: coder,
         snapshot: { latestN: 3, status: "TODO_READY", verifyExists: true, verdict: "PASS" },
-        todo: { latestN: 1, verifyExists: true, verdict: "PASS", checklistExists: false },
+        todo: { latestN: 1, verifyExists: true, verdict: "PASS", checklistExists: false, commitPlanExists: false },
       }),
     );
     const b = blockTo(actions, "coder-1");
@@ -581,7 +583,7 @@ describe("CODER 행 c1~c9", () => {
       input({
         sender: coder,
         snapshot: { latestN: 3, status: "TODO_READY", verifyExists: true, verdict: "PASS" },
-        todo: { latestN: 1, verifyExists: true, verdict: "PASS", checklistExists: false },
+        todo: { latestN: 1, verifyExists: true, verdict: "PASS", checklistExists: false, commitPlanExists: false },
         record: { notified: [], consecutiveBlocks: {}, instructed: ["impl-v1"] },
       }),
     );
@@ -593,7 +595,7 @@ describe("CODER 행 c1~c9", () => {
       input({
         sender: coder,
         snapshot: { latestN: 3, status: "IN_PROGRESS", verifyExists: true, verdict: "PASS" },
-        todo: { latestN: 1, verifyExists: true, verdict: "PASS", checklistExists: false },
+        todo: { latestN: 1, verifyExists: true, verdict: "PASS", checklistExists: false, commitPlanExists: false },
       }),
     );
     expect(allowTo(actions, "coder-1")).toBe(true);
@@ -635,7 +637,7 @@ describe("CODER 행 c1~c9", () => {
       input({
         sender: coder,
         snapshot: { latestN: 3, status: "DONE", verifyExists: true, verdict: "PASS" },
-        todo: { latestN: 1, verifyExists: true, verdict: "PASS", checklistExists: false },
+        todo: { latestN: 1, verifyExists: true, verdict: "PASS", checklistExists: false, commitPlanExists: false },
         peers: { planner: { sessionKey: "planner-1", state: "parked" } },
       }),
     );
@@ -651,7 +653,7 @@ describe("CODER 행 c1~c9", () => {
       input({
         sender: coder,
         snapshot: { latestN: 3, status: "DONE", verifyExists: true, verdict: "PASS" },
-        todo: { latestN: 1, verifyExists: true, verdict: "PASS", checklistExists: true },
+        todo: { latestN: 1, verifyExists: true, verdict: "PASS", checklistExists: true, commitPlanExists: false },
         peers: { planner: { sessionKey: "planner-1", state: "parked" } },
       }),
     );
@@ -666,7 +668,7 @@ describe("CODER 행 c1~c9", () => {
       input({
         sender: coder,
         snapshot: { latestN: 3, status: "DONE", verifyExists: true, verdict: "PASS" },
-        todo: { latestN: 1, verifyExists: true, verdict: "PASS", checklistExists: false },
+        todo: { latestN: 1, verifyExists: true, verdict: "PASS", checklistExists: false, commitPlanExists: false },
         peers: { planner: { sessionKey: "planner-1", state: "parked" } },
         record: { notified: [], consecutiveBlocks: {}, instructed: ["checklist-v1"] },
       }),
@@ -680,7 +682,7 @@ describe("CODER 행 c1~c9", () => {
       input({
         sender: coder,
         snapshot: { latestN: 3, status: "DONE", verifyExists: true, verdict: "PASS" },
-        todo: { latestN: 1, verifyExists: true, verdict: "PASS", checklistExists: false },
+        todo: { latestN: 1, verifyExists: true, verdict: "PASS", checklistExists: false, commitPlanExists: false },
         peers: { planner: { sessionKey: "planner-1", state: "idle" } },
       }),
     );
@@ -713,6 +715,63 @@ describe("CODER 행 c1~c9", () => {
     );
     expect(allowTo(actions, "coder-1")).toBe(true);
     expect(replies(actions).some((r) => r.sessionKey === "planner-1")).toBe(false);
+  });
+});
+
+describe("c9 — 커밋 계획 (M3)", () => {
+  const base = {
+    sender: { sessionKey: "coder-1", role: "coder" as const, bound: true },
+    snapshot: { latestN: 3, status: "DONE", verifyExists: true, verdict: "PASS" },
+    todo: { latestN: 1, verifyExists: true, verdict: "PASS", checklistExists: false, commitPlanExists: false },
+    peers: { planner: { sessionKey: "planner-1", state: "parked" as const } },
+  };
+
+  it("계획 없음 → coder-1 block(instructionCommitPlan(1))과 planner-1 block(instructionChecklist(3, 1)) 함께, 기록·done-v3", () => {
+    const actions = evaluate(input({ ...base, projectIsGit: true }));
+    expect(blockTo(actions, "coder-1")?.reply).toEqual({ action: "block", reason: instructionCommitPlan(1) });
+    expect(blockTo(actions, "planner-1")?.reply).toEqual({ action: "block", reason: instructionChecklist(3, 1) });
+    const rec = records(actions)[0];
+    expect(rec.instructed).toContain("commitplan-v1");
+    expect(rec.instructed).toContain("checklist-v1");
+    expect(notifies(actions).map((x) => [x.key, x.level])).toEqual([["done-v3", "info"]]);
+  });
+
+  it("instructed에 commitplan-v1·checklist-v1 → coder-1 allow, block 없음", () => {
+    const actions = evaluate(
+      input({
+        ...base,
+        projectIsGit: true,
+        record: { notified: [], consecutiveBlocks: {}, instructed: ["commitplan-v1", "checklist-v1"] },
+      }),
+    );
+    expect(allowTo(actions, "coder-1")).toBe(true);
+    expect(blockTo(actions, "coder-1")).toBeUndefined();
+  });
+
+  it("commitPlanExists: true → coder-1 allow + commit-plan-v1 info", () => {
+    const actions = evaluate(input({ ...base, projectIsGit: true, todo: { ...base.todo, commitPlanExists: true } }));
+    expect(allowTo(actions, "coder-1")).toBe(true);
+    expect(notifies(actions).map((x) => [x.key, x.level])).toEqual([
+      ["done-v3", "info"],
+      ["commit-plan-v1", "info"],
+    ]);
+  });
+
+  it("commitPlanExists: true(커밋 로그 있음 가정 — 입력에 committed 없음) → coder-1 allow + commit-plan-v1만, committed- 키 없음", () => {
+    const actions = evaluate(input({ ...base, projectIsGit: true, todo: { ...base.todo, commitPlanExists: true } }));
+    expect(allowTo(actions, "coder-1")).toBe(true);
+    expect(notifies(actions).map((x) => [x.key, x.level])).toEqual([
+      ["done-v3", "info"],
+      ["commit-plan-v1", "info"],
+    ]);
+    expect(notifies(actions).every((x) => !x.key.startsWith("committed-"))).toBe(true);
+  });
+
+  it("projectIsGit: false → coder-1 allow, coder block 없음, planner block(체크리스트) 있음", () => {
+    const actions = evaluate(input({ ...base, projectIsGit: false }));
+    expect(allowTo(actions, "coder-1")).toBe(true);
+    expect(blockTo(actions, "coder-1")).toBeUndefined();
+    expect(blockTo(actions, "planner-1")?.reply).toEqual({ action: "block", reason: instructionChecklist(3, 1) });
   });
 });
 

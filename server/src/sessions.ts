@@ -23,8 +23,8 @@ interface Runtime {
 export interface SessionsOptions {
   setTimer?: (fn: () => void, ms: number) => Timer;
   clearTimer?: (t: Timer) => void;
-  onNotify?: (key: string, level: "info" | "warn", message: string) => void;
-  onChange?: () => void;
+  onNotify?: (sessionKey: string, key: string, level: "info" | "warn", message: string) => void;
+  onChange?: (sessionKey: string) => void;
 }
 
 export class Sessions {
@@ -33,10 +33,10 @@ export class Sessions {
   private parkLimitSec: number;
   private setTimer: (fn: () => void, ms: number) => Timer;
   private clearTimer: (t: Timer) => void;
-  // Orchestrator가 설정 (session_id 전환 notify 전달).
-  onNotify?: (key: string, level: "info" | "warn", message: string) => void;
+  // Orchestrator가 설정 (session_id 전환 notify 전달 — sessionKey로 작업 채널 라우팅).
+  onNotify?: (sessionKey: string, key: string, level: "info" | "warn", message: string) => void;
   // Orchestrator가 설정 (Stop 처리 밖 상태 변경 → state 브로드캐스트).
-  onChange?: () => void;
+  onChange?: (sessionKey: string) => void;
 
   constructor(store: Store, parkLimitSec: number, opts: SessionsOptions = {}) {
     this.store = store;
@@ -74,6 +74,7 @@ export class Sessions {
         sessionIds: [],
         activeSessionId: null,
         switchedOnce: false,
+        task: null, // 서버 밖 세션 — 배정 게이트에서 allow.
       };
       this.store.state.sessions[sessionKey] = info;
     }
@@ -91,7 +92,7 @@ export class Sessions {
           info.activeSessionId = claudeSessionId;
           info.switchedOnce = true;
           this.releasePending(sessionKey, { action: "allow" });
-          this.onNotify?.(`switch-${sessionKey}`, "warn", `세션 전환 감지 — 이전 세션(${prev})을 allow로 해제했습니다`);
+          this.onNotify?.(sessionKey, `switch-${sessionKey}`, "warn", `세션 전환 감지 — 이전 세션(${prev})을 allow로 해제했습니다`);
           this.store.save();
         } else {
           // 그 외 비활성 session_id의 Stop — 평가 없이 즉시 allow.
@@ -128,7 +129,7 @@ export class Sessions {
     };
     if (r.action === "block") event.reason = r.reason.slice(0, EVENT_TEXT_MAX);
     else if (note) event.reason = note;
-    this.store.appendEvent(event);
+    this.store.appendSessionEvent(sessionKey, event);
   }
 
   private getOrCreate(sessionKey: string): Runtime {
@@ -157,8 +158,8 @@ export class Sessions {
     runtime.pending.reply({ action: "allow" });
     runtime.pending = undefined;
     runtime.state = "idle";
-    this.store.appendEvent({ type: "reply", sessionKey, action: "allow", reason: "park-timeout" });
-    this.onChange?.();
+    this.store.appendSessionEvent(sessionKey, { type: "reply", sessionKey, action: "allow", reason: "park-timeout" });
+    this.onChange?.(sessionKey);
   }
 
   // 현재 pending의 연결이 닫혔을 때만 detached (이미 방출·교체된 요청의 close는 무시 — plan-v4 A-1).
@@ -168,7 +169,7 @@ export class Sessions {
     this.clearTimer(pending.timer);
     runtime.pending = undefined;
     runtime.state = "detached";
-    this.store.appendEvent({ type: "detach", sessionKey });
-    this.onChange?.();
+    this.store.appendSessionEvent(sessionKey, { type: "detach", sessionKey });
+    this.onChange?.(sessionKey);
   }
 }

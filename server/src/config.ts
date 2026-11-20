@@ -233,20 +233,38 @@ export function loadConfig(configPath: string): AismConfig {
   return data as AismConfig;
 }
 
-// 창 크기 자동 저장 (M2 polish §3 E) — 설정 파일의 최상위 window만 바꿔 원자적으로 다시 쓴다. 실패하면 false.
-export function saveWindowSize(configPath: string, win: { width: number; height: number }): boolean {
+// 설정 파일 갱신 (M3 §3 D) — 읽기 → mutate → 2칸 들여쓰기·원본 줄바꿈으로 임시 파일 → (validate면) loadConfig로 검증 → rename.
+// 실패하면 임시 파일을 지우고 false. 원본은 그대로.
+export function updateConfigFile(
+  configPath: string,
+  mutate: (data: Record<string, unknown>) => void,
+  opts: { validate?: boolean } = {},
+): boolean {
+  const tmp = `${configPath}.tmp`;
   try {
     const raw = fs.readFileSync(configPath, "utf8");
     const data = JSON.parse(raw) as Record<string, unknown>;
-    data.window = { width: win.width, height: win.height };
+    mutate(data);
     const eol = raw.includes("\r\n") ? "\r\n" : "\n";
     const out = JSON.stringify(data, null, 2).replace(/\n/g, eol) + eol;
-    const tmp = `${configPath}.tmp`;
     fs.writeFileSync(tmp, out);
+    if (opts.validate !== false) loadConfig(tmp);
     fs.renameSync(tmp, configPath);
     return true;
   } catch (e) {
-    console.warn(`창 크기 저장 실패 — ${String(e)}`);
+    try {
+      fs.rmSync(tmp, { force: true });
+    } catch {
+      /* ignore */
+    }
+    console.warn(`설정 파일 저장 실패 — ${String(e)}`);
     return false;
   }
+}
+
+// 창 크기 자동 저장 (M2 polish §3 E) — 동작은 이전과 같다(검증 없이 window만 교체).
+export function saveWindowSize(configPath: string, win: { width: number; height: number }): boolean {
+  return updateConfigFile(configPath, (d) => {
+    d.window = { width: win.width, height: win.height };
+  }, { validate: false });
 }

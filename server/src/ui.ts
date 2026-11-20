@@ -6,18 +6,16 @@ import { saveWindowSize } from "./config.js";
 
 export const DEFAULT_WINDOW = { width: 1000, height: 900 };
 
-type Child = { on: (ev: "error", cb: (e: Error) => void) => void; unref: () => void };
+export type Child = { on: (ev: "error", cb: (e: Error) => void) => void; once: (ev: "exit", cb: () => void) => void; unref: () => void };
 export type UiSpawn = (cmd: string, args: string[], opts: { stdio: "ignore" }) => Child;
 
-// Edge 앱 창을 AISM 전용 프로필로 띄운다. AISM_NO_UI=1이면 띄우지 않는다.
+// Edge 앱 창을 AISM 전용 프로필로 띄운다.
 export function openUi(
   port: number,
   win: { width: number; height: number },
   aismRoot: string,
-  opts: { spawn?: UiSpawn; env?: NodeJS.ProcessEnv } = {},
-): void {
-  const env = opts.env ?? process.env;
-  if (env.AISM_NO_UI === "1") return;
+  opts: { spawn?: UiSpawn } = {},
+): Child | null {
   const profile = path.join(aismRoot, "state", "edge-profile");
   const args = [
     "/c",
@@ -33,9 +31,24 @@ export function openUi(
     const c = sp("cmd.exe", args, { stdio: "ignore" });
     c.on("error", (e) => console.warn(`UI 창 띄우기 실패 — ${e.message}`));
     c.unref();
+    return c;
   } catch (e) {
     console.warn(`UI 창 띄우기 실패 — ${String(e)}`);
+    return null;
   }
+}
+
+// child가 끝나거나(exit·error) timeoutMs가 지나면 resolve. CLI가 콘솔을 닫기 전에 Edge 실행 명령이 끝나도록 기다린다.
+export function waitForExit(child: Child, timeoutMs = 5000): Promise<void> {
+  return new Promise((resolve) => {
+    const t = setTimeout(resolve, timeoutMs);
+    const done = () => {
+      clearTimeout(t);
+      resolve();
+    };
+    child.once("exit", done);
+    child.on("error", done);
+  });
 }
 
 // POST /api/ui/window 처리. sendBeacon(text/plain)은 문자열 본문으로 온다.

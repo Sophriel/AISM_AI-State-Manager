@@ -4,11 +4,12 @@ import { spawn } from "node:child_process";
 import path from "node:path";
 import { AISM_ROOT } from "./config.js";
 
-// 토스트 대상 — warn 전부 + 전달 못 한 지시 + 체크리스트 완료 (D3, D6).
+// 토스트 대상 — warn 전부 + 전달 못 한 지시 + 커밋 계획 완료 + 체크리스트 완료 (D3, D6, M3).
 export function shouldToast(level: "info" | "warn", key: string): boolean {
   return (
     level === "warn" ||
     key.startsWith("undeliverable-") ||
+    key.startsWith("commit-plan-") ||
     key.startsWith("checklist-")
   );
 }
