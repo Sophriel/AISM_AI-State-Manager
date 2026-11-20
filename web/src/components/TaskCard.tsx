@@ -35,9 +35,18 @@ function pendingActionText(pa: PendingAction): string {
       return "CODER가 멈췄습니다 — CODER 창을 확인하세요";
     case "done":
       return `체크리스트로 테스트한 뒤 작업을 종료하세요 (todo-v${pa.t}-checklist.md)`;
+    case "commit":
+      return `CODER 창에서 커밋 계획(todo-v${pa.t}-commit.md)을 확인하고 허가하세요`;
     case "describe":
       return "PLANNER 창에서 작업을 설명하세요";
   }
+}
+
+// done의 둘째 줄 — 커밋 상태 (M3 §3 C).
+function pendingActionSub(pa: PendingAction): string | null {
+  if (pa.kind !== "done") return null;
+  if (pa.commit === "planned") return `CODER 창에서 커밋 계획(todo-v${pa.t}-commit.md)을 확인하고 허가하세요`;
+  return null;
 }
 
 function Badge({ display }: { display: Display | null }) {
@@ -58,7 +67,7 @@ interface Props {
 }
 
 function TaskCard({ state, planDisplay, verifyDisplay, coderDisplay }: Props) {
-  const task = state?.activeTask ?? null;
+  const task = state?.task ?? null;
   const snap = state?.snapshot ?? null;
   const pa = state?.pendingAction ?? null;
 
@@ -67,6 +76,9 @@ function TaskCard({ state, planDisplay, verifyDisplay, coderDisplay }: Props) {
       <div className="task-row">
         <span className="label">프로젝트</span>
         <span className="value">{task ? task.project : "—"}</span>
+        {task && state?.projectInfo?.[task.project]?.git && (
+          <span className="value">{`git: ${state.projectInfo[task.project].git?.branch ?? "?"}`}</span>
+        )}
         <span className="label">폴더</span>
         <span className="value">{task ? (task.folder ?? "새 작업") : "—"}</span>
       </div>
@@ -87,6 +99,8 @@ function TaskCard({ state, planDisplay, verifyDisplay, coderDisplay }: Props) {
         <span className={`value verdict-${(state?.todo?.verdict ?? "none").toLowerCase()}`}>
           {state?.todo?.verdict ?? "—"}
         </span>
+        <span className="label">커밋</span>
+        <span className="value">{!state?.todo || !state.todo.commitPlanExists ? "—" : "계획"}</span>
       </div>
       <div className="task-row sessions">
         <span className="label">PLANNER</span>
@@ -110,6 +124,7 @@ function TaskCard({ state, planDisplay, verifyDisplay, coderDisplay }: Props) {
           )}
         </div>
       )}
+      {pa && pendingActionSub(pa) && <div className="pending-hint">{pendingActionSub(pa)}</div>}
       {pa && pa.kind === "deliver" &&
         (pa.role === "planner" ? planDisplay : pa.role === "verifier" ? verifyDisplay : coderDisplay) ===
           "disconnected" && (

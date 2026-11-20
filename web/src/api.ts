@@ -33,9 +33,11 @@ export interface TodoSnapshot {
   verifyExists: boolean;
   verdict: "PASS" | "REVISE" | "MALFORMED" | null;
   checklistExists: boolean;
+  commitPlanExists: boolean;
 }
 
-export interface ActiveTask {
+export interface Task {
+  id: string;
   project: string;
   folder: string | null;
   startedAt: number;
@@ -49,7 +51,8 @@ export type PendingAction =
   | { kind: "pass"; n: number; text: string }
   | { kind: "todo-gate"; n: number }
   | { kind: "coder" }
-  | { kind: "done"; t: number }
+  | { kind: "done"; t: number; commit: "none" | "planned" }
+  | { kind: "commit"; t: number }
   | { kind: "describe" };
 
 export interface SessionView {
@@ -66,15 +69,32 @@ export interface AismEvent {
 }
 
 export interface State {
-  activeTask: ActiveTask | null;
+  task: Task | null;
+  unattached?: Array<{ id: string; project: string; folder: string | null; startedAt: number }>;
   assignedState: { planner: SessionState | null; verifier: SessionState | null; coder: SessionState | null };
   assignedDisplay: { planner: Display | null; verifier: Display | null; coder: Display | null };
   snapshot: Snapshot | null;
   todo: TodoSnapshot | null;
   sessions: Record<string, SessionView>;
   projects: string[];
+  projectInfo: Record<string, ProjectInfo>;
   pendingAction: PendingAction | null;
   events: AismEvent[];
+}
+
+// 프로젝트별 루트·git 정보 (M3 §3 D).
+export interface ProjectInfo {
+  root: string;
+  git: { branch: string | null } | null;
+}
+
+// 프로젝트 추가 요청 (M3 §3 D).
+export interface NewProject {
+  name: string;
+  root: string;
+  plansDir: string;
+  protectedPaths: string[];
+  roleOverlay?: string;
 }
 
 // SSE notify 페이로드.
@@ -85,9 +105,10 @@ export interface NotifyPayload {
   copyText?: string;
 }
 
-export async function fetchState(): Promise<State> {
-  const res = await fetch("/api/state");
-  if (!res.ok) throw new Error(`GET /api/state → ${res.status}`);
+export async function fetchState(taskId: string | null): Promise<State> {
+  const url = taskId ? `/api/state?task=${encodeURIComponent(taskId)}` : "/api/state";
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`GET ${url} → ${res.status}`);
   return (await res.json()) as State;
 }
 
@@ -109,22 +130,47 @@ async function postJson(path: string, body: unknown): Promise<void> {
   }
 }
 
-export function newTask(project: string): Promise<void> {
-  return postJson("/api/tasks/new", { project });
+// 새 작업 — 응답 taskId 반환 (T8).
+export async function newTask(project: string): Promise<string> {
+  const res = await fetch("/api/tasks/new", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ project }),
+  });
+  if (!res.ok) {
+    let detail = "";
+    try {
+      const j = (await res.json()) as { error?: string };
+      if (j.error) detail = ` (${j.error})`;
+    } catch {
+      /* ignore */
+    }
+    throw new Error(`POST /api/tasks/new → ${res.status}${detail}`);
+  }
+  const j = (await res.json()) as { taskId: string };
+  return j.taskId;
 }
 
-export function relaunch(role: Role, mode: "new" | "resume" = "new"): Promise<void> {
-  return postJson("/api/tasks/relaunch", { role, mode });
+export function relaunch(taskId: string, role: Role, mode: "new" | "resume" = "new"): Promise<void> {
+  return postJson("/api/tasks/relaunch", { task: taskId, role, mode });
 }
 
-export function closeTask(): Promise<void> {
-  return postJson("/api/tasks/close", {});
+export function closeTask(taskId: string): Promise<void> {
+  return postJson("/api/tasks/close", { task: taskId });
 }
 
-export function clearTimeline(): Promise<void> {
-  return postJson("/api/timeline/clear", {});
+export function clearTimeline(taskId: string): Promise<void> {
+  return postJson("/api/timeline/clear", { task: taskId });
 }
 
 export function saveWindowSize(width: number, height: number): Promise<void> {
   return postJson("/api/ui/window", { width, height });
+}
+
+export function addProject(p: NewProject): Promise<void> {
+  return postJson("/api/projects", p);
+}
+
+export function removeProject(name: string): Promise<void> {
+  return postJson("/api/projects/remove", { name });
 }

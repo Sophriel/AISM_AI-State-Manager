@@ -1,23 +1,23 @@
-// T13 — 웹 UI. 첫 로드 GET /api/state, 이후 EventSource('/api/events')로 갱신.
+// T13 — 웹 UI. taskId(URL ?task=) 기준: 없으면 시작 화면(StartScreen), 있으면 작업 화면.
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   clearTimeline,
   closeTask,
   fetchState,
-  newTask,
   relaunch,
   saveWindowSize,
   type NotifyPayload,
   type Role,
   type State,
 } from "./api";
+import StartScreen from "./components/StartScreen";
 import TaskCard from "./components/TaskCard";
 import Timeline from "./components/Timeline";
 import "./App.css";
 
 // relaunch — 배정된 세션 상태 기준 (W4).
 function canRelaunch(state: State | null, role: Role): boolean {
-  const task = state?.activeTask;
+  const task = state?.task;
   if (!task) return false;
   if ((role === "verifier" || role === "coder") && task.folder === null) return false;
   const s = state.assignedState[role];
@@ -28,7 +28,7 @@ function canRelaunch(state: State | null, role: Role): boolean {
 
 // 이어서 띄우기 — 서버 조건과 같음 (S-9).
 function canResume(state: State | null, role: Role): boolean {
-  const task = state?.activeTask;
+  const task = state?.task;
   if (!task || task.folder === null) return false;
   const key = task.assigned[role];
   if (!key) return false;
@@ -40,9 +40,9 @@ const ROLES = ["planner", "verifier", "coder"] as const;
 const ROLE_LABEL: Record<Role, string> = { planner: "PLANNER", verifier: "VERIFIER", coder: "CODER" };
 
 function App() {
+  const [taskId, setTaskId] = useState<string | null>(() => new URLSearchParams(location.search).get("task"));
   const [state, setState] = useState<State | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [project, setProject] = useState("");
   const [busy, setBusy] = useState(false);
   const audioRef = useRef<AudioContext | null>(null);
 
@@ -81,22 +81,34 @@ function App() {
     [beep],
   );
 
-  // 첫 로드.
-  useEffect(() => {
-    fetchState()
-      .then((s) => {
-        setState(s);
-        setProject((p) => p || (s.activeTask ? s.activeTask.project : ""));
-      })
-      .catch((e) => setError(String(e)));
+  const openTask = useCallback((id: string) => {
+    history.replaceState(null, "", "?task=" + encodeURIComponent(id));
+    setTaskId(id);
+  }, []);
+  const leaveTask = useCallback(() => {
+    history.replaceState(null, "", location.pathname);
+    setTaskId(null);
   }, []);
 
-  // SSE.
+  // 첫 로드 — taskId 기준. 작업 화면에서 task null이면 시작 화면으로.
   useEffect(() => {
-    const es = new EventSource("/api/events");
+    fetchState(taskId)
+      .then((s) => {
+        setState(s);
+        if (taskId && !s.task) leaveTask();
+      })
+      .catch((e) => setError(String(e)));
+  }, [taskId, leaveTask]);
+
+  // SSE — taskId 채널(작업) 또는 lobby(시작 화면). taskId 바뀌면 재연결.
+  useEffect(() => {
+    const url = taskId ? `/api/events?task=${encodeURIComponent(taskId)}` : "/api/events";
+    const es = new EventSource(url);
     es.addEventListener("state", (e) => {
       try {
-        setState(JSON.parse(e.data) as State);
+        const s = JSON.parse(e.data) as State;
+        setState(s);
+        if (taskId && !s.task) leaveTask();
       } catch {
         /* ignore */
       }
@@ -109,7 +121,7 @@ function App() {
       }
     });
     return () => es.close();
-  }, [onNotify]);
+  }, [taskId, onNotify, leaveTask]);
 
   // 창 크기 자동 저장 (M2 polish §3 E) — 닫을 때 sendBeacon, 크기 변경 1초 뒤 POST.
   useEffect(() => {
@@ -155,11 +167,8 @@ function App() {
     }
   }, []);
 
-  const handleNewTask = () => {
-    if (!project) return;
-    void run(() => newTask(project));
-  };
   const handleRelaunch = (role: Role, mode: "new" | "resume") => {
+    if (!taskId) return;
     const s = state?.assignedState?.[role];
     const label = ROLE_LABEL[role];
     if (s === "working") {
@@ -175,70 +184,64 @@ function App() {
       )
         return;
     }
-    void run(() => relaunch(role, mode));
+    void run(() => relaunch(taskId, role, mode));
   };
   const handleClose = () => {
+    if (!taskId) return;
     if (!window.confirm("작업을 종료할까요? 모든 대기 중인 세션이 allow로 해제됩니다.")) return;
-    void run(() => closeTask());
+    void run(async () => {
+      await closeTask(taskId);
+      leaveTask();
+    });
   };
   const handleClearTimeline = () => {
-    if (!window.confirm("타임라인을 비울까요? 화면에서만 지워지고 기록 파일(state/events.jsonl)은 그대로 남습니다.")) return;
-    void run(() => clearTimeline());
+    if (!taskId) return;
+    if (!window.confirm("타임라인을 비울까요? 화면에서만 지워지고 기록 파일(state/tasks/<id>/events.jsonl)은 그대로 남습니다.")) return;
+    void run(() => clearTimeline(taskId));
   };
 
-  const activeTask = state?.activeTask ?? null;
-  const projects = state?.projects ?? [];
-
-  const selectValue = activeTask ? activeTask.project : project;
+  const isTaskScreen = taskId !== null;
 
   return (
     <div className="app" onClick={requestPermission}>
       <header className="app-header">
         <h1>AISM</h1>
+        {isTaskScreen && state?.task && <span className="project-label">{state.task.project}</span>}
         {error && <span className="error">{error}</span>}
       </header>
 
-      <TaskCard
-        state={state}
-        planDisplay={state ? state.assignedDisplay.planner : null}
-        verifyDisplay={state ? state.assignedDisplay.verifier : null}
-        coderDisplay={state ? state.assignedDisplay.coder : null}
-      />
+      {isTaskScreen ? (
+        <>
+          <TaskCard
+            state={state}
+            planDisplay={state ? state.assignedDisplay.planner : null}
+            verifyDisplay={state ? state.assignedDisplay.verifier : null}
+            coderDisplay={state ? state.assignedDisplay.coder : null}
+          />
 
-      <div className="controls">
-        <div className="control-row">
-          <select
-            value={selectValue}
-            onChange={(e) => setProject(e.target.value)}
-            disabled={!!activeTask || busy}
-          >
-            <option value="">프로젝트 선택</option>
-            {projects.map((p) => (
-              <option key={p} value={p}>
-                {p}
-              </option>
+          <div className="controls">
+            {ROLES.map((r) => (
+              <div className="control-row" key={r}>
+                <button type="button" onClick={() => handleRelaunch(r, "new")} disabled={busy || !canRelaunch(state, r)}>
+                  {ROLE_LABEL[r]} 다시 띄우기
+                </button>
+                <button type="button" onClick={() => handleRelaunch(r, "resume")} disabled={busy || !canResume(state, r)}>
+                  {ROLE_LABEL[r]} 이어서 띄우기
+                </button>
+              </div>
             ))}
-          </select>
-          <button type="button" onClick={handleNewTask} disabled={!!activeTask || !project || busy}>
-            새 작업
-          </button>
-          <button type="button" onClick={handleClose} disabled={busy || !activeTask}>
-            작업 종료
-          </button>
-        </div>
-        {ROLES.map((r) => (
-          <div className="control-row" key={r}>
-            <button type="button" onClick={() => handleRelaunch(r, "new")} disabled={busy || !canRelaunch(state, r)}>
-              {ROLE_LABEL[r]} 다시 띄우기
-            </button>
-            <button type="button" onClick={() => handleRelaunch(r, "resume")} disabled={busy || !canResume(state, r)}>
-              {ROLE_LABEL[r]} 이어서 띄우기
-            </button>
+            <div className="control-row">
+              <button type="button" onClick={handleClose} disabled={busy}>
+                작업 종료
+              </button>
+            </div>
           </div>
-        ))}
-      </div>
 
-      <Timeline events={state?.events ?? []} onClear={handleClearTimeline} disabled={busy} />
+          <Timeline events={state?.events ?? []} onClear={handleClearTimeline} disabled={busy} />
+        </>
+      ) : (
+        <StartScreen state={state} busy={busy} run={run} onOpen={openTask} />
+      )}
     </div>
   );
 }
