@@ -15,7 +15,7 @@ import {
   emptyTodoSnapshot,
 } from "./artifacts.js";
 import type { Action, PeerView, Role, Reply } from "./machine.js";
-import { evaluate, instructionApproveAndTodo } from "./machine.js";
+import { evaluate, instructionApproveAndTodo, instructionImplement } from "./machine.js";
 import type { LaunchOptions } from "./launcher.js";
 import { launchSession as defaultLaunch } from "./launcher.js";
 import { NotifyHub } from "./notify.js";
@@ -30,11 +30,23 @@ export type PendingAction =
   | { kind: "pass"; n: number; text: string }
   | { kind: "todo-gate"; n: number }
   | { kind: "coder" }
-  | { kind: "done"; t: number; commit: "none" | "planned" }
+  | { kind: "done"; t: number; commit: "none" | "planned" | "done" }
   | { kind: "commit"; t: number }
   | { kind: "describe" };
 
-export type Display = "working" | "waiting" | "your-turn" | "idle" | "disconnected";
+export type Display = "working" | "waiting" | "your-turn" | "idle" | "disconnected" | "queued";
+
+// 로컬 모델 대기열 (S-4) — 엔드포인트별 사용 중 표시와 대기 항목.
+type LocalWait = {
+  taskId: string;
+  kind: "block" | "launch";
+  role: Role;
+  sessionKey?: string;
+  text: string;
+  lock?: "coding";
+  resumeSessionId?: string;
+  relaunch?: boolean;
+};
 
 // pendingAction의 대상 역할 — deliver는 해당 역할, coder·done(커밋 허가 대기면 CODER)·commit은 CODER, 나머지는 PLANNER.
 function targetOf(pa: PendingAction | null): Role | null {
@@ -77,6 +89,9 @@ export class Orchestrator {
   private configPath: string | null;
   private updateConfig: (p: string, mutate: (d: Record<string, unknown>) => void) => boolean;
   private projectInfo: Record<string, { root: string; git: GitInfo | null }> = {};
+  // 로컬 모델 대기열 (S-4) — 엔드포인트 → 사용 중 세션 키, 엔드포인트 → 대기 항목.
+  private localBusy: Record<string, string> = {};
+  private localQueue: Record<string, LocalWait[]> = {};
 
   constructor(deps: OrchestratorDeps) {
     this.config = deps.config;
@@ -97,8 +112,27 @@ export class Orchestrator {
       const t = this.taskOfSession(k);
       if (t) this.broadcastTask(t);
       this.broadcastLobby();
+      if (this.sessions.stateOf(k) === "detached") this.releaseLocal(k);
     };
     this.refreshProjectInfo();
+    // 코딩 잠금 — 작업이 없는 잠금 삭제(drain 안 함), 그 다음 잠금이 없는 대기 프로젝트 drain (S-4).
+    let lockChanged = false;
+    for (const project of Object.keys(this.store.state.codingLocks)) {
+      const lock = this.store.state.codingLocks[project];
+      if (!this.store.state.tasks[lock.task]) {
+        delete this.store.state.codingLocks[project];
+        lockChanged = true;
+      }
+    }
+    const queueProjects = new Set<string>();
+    for (const w of this.store.state.codingQueue) {
+      const t = this.store.state.tasks[w.task];
+      if (t) queueProjects.add(t.project);
+    }
+    for (const project of queueProjects) {
+      if (!this.store.state.codingLocks[project]) this.drainCoding(project);
+    }
+    if (lockChanged) this.store.save();
   }
 
   getHub(): NotifyHub {
@@ -128,6 +162,9 @@ export class Orchestrator {
       ...(stopRole ? { role: stopRole } : {}),
       ...(msg ? { message: msg } : {}),
     });
+
+    // 로컬 대기열 해제 (S-4) — stop 이벤트 기록 직후, 모르는 키 allow·배정 게이트보다 먼저.
+    this.releaseLocal(sessionKey);
 
     const info = this.store.state.sessions[sessionKey];
     if (!info) {
@@ -183,6 +220,11 @@ export class Orchestrator {
     });
 
     this.applyActions(task, actions);
+
+    // git 아님 프로젝트 — CODER DONE Stop → 코딩 잠금 해제 (S-4).
+    if (role === "coder" && snapshot.status === "DONE" && this.projectInfo[task.project]?.git == null) {
+      this.releaseCoding(task.project, task.id);
+    }
   }
 
   // 그 세션이 배정된 작업 — assigned에 그 키를 가진 첫 작업 (둘 이상이면 경고 후 첫 번째).
@@ -220,14 +262,28 @@ export class Orchestrator {
     for (const action of actions) {
       switch (action.kind) {
         case "reply":
-          this.sessions.resolve(action.sessionKey, action.reply);
+          if (action.reply.action === "block") {
+            if (action.lock === "coding") {
+              // c6 구현 지시 — 프로젝트 코딩 잠금 획득·대기 (S-4).
+              this.acquireOrWait(task, action.sessionKey, action.reply.reason);
+            } else {
+              const role = (["planner", "verifier", "coder"] as const).find(
+                (r) => task.assigned[r] === action.sessionKey,
+              );
+              if (role) this.deliverBlock(task, action.sessionKey, role, action.reply.reason);
+              else this.sessions.resolve(action.sessionKey, action.reply);
+            }
+          } else {
+            this.sessions.resolve(action.sessionKey, action.reply);
+          }
           break;
         case "hold":
           // pending 유지 — 세션이 계속 파킹. hold 이벤트 기록 (W3). 세션 작업 파일로 (T4).
           this.store.appendSessionEvent(action.sessionKey, { type: "hold", sessionKey: action.sessionKey });
           break;
         case "launch":
-          this.launchRole(task, action.role, action.instruction);
+          if (action.instruction) this.deliverLaunch(task, action.role, action.instruction);
+          else this.launchRole(task, action.role);
           break;
         case "notify":
           this.emitNotify(task, action.key, action.level, action.message, action.copyText);
@@ -249,7 +305,8 @@ export class Orchestrator {
   }
 
   // 역할 세션 실행 (launch Action). instruction이 있으면 첫 지시로 전달·기록 (M2 polish §3 B).
-  private launchRole(task: Task, role: Role, instruction?: string): void {
+  // resumeSessionId가 있으면 그 세션 이어서 (S-9), relaunch면 launch 이벤트에 표시. 반환 sessionKey.
+  private launchRole(task: Task, role: Role, instruction?: string, resumeSessionId?: string, relaunch?: boolean): string {
     const result = this.launch({
       config: this.config,
       project: task.project,
@@ -259,15 +316,172 @@ export class Orchestrator {
       store: this.store,
       task: task.id,
       ...(instruction ? { firstInstruction: instruction } : {}),
+      ...(resumeSessionId ? { resumeSessionId } : {}),
     });
-    this.sessions.register(result.sessionKey, role === "planner" && task.folder === null ? "unbound" : "working");
+    this.sessions.register(
+      result.sessionKey,
+      resumeSessionId ? "working" : role === "planner" && task.folder === null ? "unbound" : "working",
+    );
     this.assign(task, role, result.sessionKey);
     this.store.appendSessionEvent(result.sessionKey, {
       type: "launch",
       role,
       sessionKey: result.sessionKey,
+      ...(relaunch ? { relaunch: true } : {}),
+      ...(resumeSessionId ? { resume: true } : {}),
       ...(instruction ? { instruction: instruction.slice(0, EVENT_TEXT_MAX) } : {}),
     });
+    return result.sessionKey;
+  }
+
+  // 로컬 모델 대기열 (S-4) — 엔드포인트 변수에 ANTHROPIC_BASE_URL이 있으면 로컬.
+  private isLocalEndpoint(name: string): boolean {
+    const vars = this.config.endpoints[name];
+    return vars !== undefined && "ANTHROPIC_BASE_URL" in vars;
+  }
+
+  private endpointOf(role: Role): string {
+    return this.config.roles[role].endpoint;
+  }
+
+  // 같은 작업·역할 항목이 있으면 그 자리 교체, 없으면 끝에 추가.
+  private enqueueLocal(ep: string, item: LocalWait): void {
+    const q = (this.localQueue[ep] ??= []);
+    const i = q.findIndex((w) => w.taskId === item.taskId && w.role === item.role);
+    if (i >= 0) q[i] = item;
+    else q.push(item);
+  }
+
+  // block 전달 — 로컬 엔드포인트가 사용 중이면 대기열로.
+  private deliverBlock(task: Task, sessionKey: string, role: Role, text: string, lock?: "coding"): void {
+    const ep = this.endpointOf(role);
+    if (!this.isLocalEndpoint(ep)) {
+      this.sessions.resolve(sessionKey, { action: "block", reason: text });
+      return;
+    }
+    if (!this.localBusy[ep] || this.localBusy[ep] === sessionKey) {
+      this.sessions.resolve(sessionKey, { action: "block", reason: text });
+      this.localBusy[ep] = sessionKey;
+      return;
+    }
+    this.enqueueLocal(ep, { taskId: task.id, kind: "block", role, sessionKey, text, lock });
+  }
+
+  // launch 전달 — 로컬 엔드포인트가 사용 중이면 대기열에 넣고 "queued".
+  private deliverLaunch(task: Task, role: Role, text: string, resumeSessionId?: string, relaunch?: boolean): "launched" | "queued" {
+    const ep = this.endpointOf(role);
+    if (!this.isLocalEndpoint(ep) || !this.localBusy[ep]) {
+      const key = this.launchRole(task, role, text, resumeSessionId, relaunch);
+      if (this.isLocalEndpoint(ep)) this.localBusy[ep] = key;
+      return "launched";
+    }
+    this.enqueueLocal(ep, { taskId: task.id, kind: "launch", role, text, resumeSessionId, relaunch });
+    return "queued";
+  }
+
+  // 사용 중 표시 해제 — 그 키를 사용하는 엔드포인트마다 삭제 후 drain.
+  private releaseLocal(sessionKey: string): void {
+    for (const ep of Object.keys(this.localBusy)) {
+      if (this.localBusy[ep] === sessionKey) {
+        delete this.localBusy[ep];
+        this.drainLocal(ep);
+      }
+    }
+  }
+
+  // 대기열 drain — 사용 중이 아닌 동안 맨 앞 항목을 처리한다.
+  private drainLocal(ep: string): void {
+    while (!this.localBusy[ep]) {
+      const item = this.localQueue[ep]?.shift();
+      if (!item) break;
+      const task = this.taskById(item.taskId);
+      if (!task) continue; // 작업 없음 → 버림.
+      if (item.kind === "block") {
+        const key = item.sessionKey;
+        if (!key || task.assigned[item.role] !== key) continue; // 대상이 아니면 버림.
+        if (this.sessions.stateOf(key) === "parked") {
+          this.sessions.resolve(key, { action: "block", reason: item.text });
+          this.localBusy[ep] = key;
+          this.store.save();
+          this.broadcastTask(task);
+        } else {
+          this.addUndelivered(task, item.role, item.text);
+          this.store.save();
+          this.broadcastTask(task);
+        }
+      } else {
+        try {
+          const key = this.launchRole(task, item.role, item.text, item.resumeSessionId, item.relaunch);
+          this.localBusy[ep] = key;
+          this.store.save();
+          this.broadcastTask(task);
+        } catch {
+          this.emitNotify(task, `queue-launch-failed-${item.role}`, "warn", `${item.role.toUpperCase()} 실행 실패 — 대기 항목을 건너뜁니다`);
+          continue;
+        }
+      }
+    }
+    this.broadcastLobby();
+  }
+
+  // 프로젝트별 코딩 잠금 (S-4) — 잠금이 없거나 자기 작업이면 잠고 후 전달, 아니면 대기.
+  private acquireOrWait(task: Task, sessionKey: string, text: string): void {
+    const lock = this.store.state.codingLocks[task.project];
+    if (!lock || lock.task === task.id) {
+      this.store.state.codingLocks[task.project] = { task: task.id, since: Date.now() };
+      this.deliverBlock(task, sessionKey, "coder", text, "coding");
+      return;
+    }
+    const q = this.store.state.codingQueue;
+    for (let i = q.length - 1; i >= 0; i--) {
+      if (q[i].task === task.id) q.splice(i, 1);
+    }
+    q.push({ task: task.id, sessionKey, text, since: Date.now() });
+  }
+
+  private releaseCoding(project: string, taskId: string): void {
+    if (this.store.state.codingLocks[project]?.task !== taskId) return;
+    delete this.store.state.codingLocks[project];
+    this.drainCoding(project);
+  }
+
+  // 코딩 잠금 drain — 그 프로젝트 대기 항목을 꺼내 잠금을 넘긴다. 한 항목 처리 후 끝(잠금이 잡힘).
+  private drainCoding(project: string): void {
+    while (!this.store.state.codingLocks[project]) {
+      const i = this.store.state.codingQueue.findIndex((w) => {
+        const t = this.taskById(w.task);
+        return t !== null && t.project === project;
+      });
+      if (i < 0) break;
+      const [wait] = this.store.state.codingQueue.splice(i, 1);
+      const task = this.taskById(wait.task);
+      if (!task) continue; // 작업 없음 → 버리고 계속.
+      const key = task.assigned.coder;
+      this.store.state.codingLocks[project] = { task: task.id, since: Date.now() };
+      if (!key || this.sessions.stateOf(key) !== "parked") {
+        this.addUndelivered(task, "coder", wait.text);
+      } else {
+        this.deliverBlock(task, key, "coder", wait.text, "coding");
+      }
+      this.store.save();
+      this.broadcastTask(task);
+      this.broadcastLobby();
+      return; // 잠금이 잡혔다 — 루프 종료.
+    }
+  }
+
+  // POST /api/tasks/commit-done — 커밋 완료 표시 후 코딩 잠금 해제 (S-4).
+  commitDone(taskId: string): { ok: boolean; status: number; error?: string } {
+    const task = this.taskById(taskId);
+    if (!task) return { ok: false, status: 404, error: "unknown task" };
+    if (this.projectInfo[task.project]?.git == null) return { ok: false, status: 409, error: "not a git project" };
+    if (task.commitDone) return { ok: true, status: 200 };
+    task.commitDone = true;
+    this.releaseCoding(task.project, task.id);
+    this.store.save();
+    this.broadcastTask(task);
+    this.broadcastLobby();
+    return { ok: true, status: 200 };
   }
 
   // bind Action — task·세션에 folder 기록.
@@ -317,9 +531,26 @@ export class Orchestrator {
     this.broadcastLobby();
   }
 
+  // 대기 사유 (S-4) — 코딩 대기열 우선, 그 다음 로컬 대기열.
+  private queueOf(task: Task): { role: Role; reason: "local" | "coding" } | null {
+    if (this.store.state.codingQueue.some((w) => w.task === task.id)) {
+      return { role: "coder", reason: "coding" };
+    }
+    for (const ep of Object.keys(this.localQueue)) {
+      const item = this.localQueue[ep].find((w) => w.taskId === task.id);
+      if (item) return { role: item.role, reason: "local" };
+    }
+    return null;
+  }
+
   // 표시 상태 계산 (plan-v3 §3 B 규칙 1~6).
   private displayOf(role: Role, task: Task | null, pa: PendingAction | null): Display | null {
     if (!task) return null;
+    // 순서 대기 (S-4) — 코딩 대기열(coder) 또는 로컬 대기열에 있으면 queued.
+    if (role === "coder" && this.store.state.codingQueue.some((w) => w.task === task.id)) return "queued";
+    for (const ep of Object.keys(this.localQueue)) {
+      if (this.localQueue[ep].some((w) => w.taskId === task.id && w.role === role)) return "queued";
+    }
     const key = task.assigned[role];
     if (!key) return null; // 배정 없음
     const st = this.sessions.stateOf(key) ?? "detached"; // 모르면 detached
@@ -388,6 +619,7 @@ export class Orchestrator {
       projects: Object.keys(this.config.projects),
       projectInfo: this.projectInfo,
       pendingAction: pa,
+      queue: task ? this.queueOf(task) : null,
       events,
       ...(task ? {} : { unattached }),
     };
@@ -437,9 +669,9 @@ export class Orchestrator {
       const T = todo.latestN;
       if (T !== null) {
         const isGit = this.projectInfo[task.project]?.git != null;
-        const commit = !isGit || !todo.commitPlanExists ? "none" : "planned";
+        const commit = !isGit || !todo.commitPlanExists ? "none" : task.commitDone ? "done" : "planned";
         if (todo.checklistExists) return { kind: "done", t: T, commit };
-        if (commit === "planned") return { kind: "commit", t: T };
+        if (commit === "planned") return { kind: "commit", t: T }; // commitDone이면 commit kind 행 건너뜀.
       }
     }
     return null;
@@ -473,7 +705,12 @@ export class Orchestrator {
   }
 
   // POST /api/tasks/relaunch — 배정 기준 (W4). mode "resume" = 이전 세션 이어서 (S-9).
-  relaunch(taskId: string, role: Role, mode: "new" | "resume" = "new"): { ok: boolean; status: number; error?: string } {
+  relaunch(taskId: string, role: Role, mode: "new" | "resume" = "new"): {
+    ok: boolean;
+    status: number;
+    error?: string;
+    queued?: boolean;
+  } {
     const task = this.taskById(taskId);
     if (!task) return { ok: false, status: 404, error: "unknown task" };
     if ((role === "verifier" || role === "coder") && task.folder === null)
@@ -494,7 +731,48 @@ export class Orchestrator {
     ) {
       return { ok: false, status: 409, error: "cannot resume" };
     }
-    // 전달 못 한 지시가 있으면 새 세션의 첫 지시로 넘기고 바로 삭제 (M2 polish §3 B).
+    // 첫 지시 규칙 (S-4) — 순서대로 첫 번째: undelivered → 로컬 대기 항목(삭제) → 구현 지시.
+    let firstText = task.undelivered.find((u) => u.role === role)?.text;
+    if (firstText === undefined) {
+      for (const ep of Object.keys(this.localQueue)) {
+        const i = this.localQueue[ep].findIndex((w) => w.taskId === task.id && w.role === role);
+        if (i >= 0) {
+          firstText = this.localQueue[ep][i].text;
+          this.localQueue[ep].splice(i, 1);
+          break;
+        }
+      }
+    }
+    if (firstText === undefined && role === "coder" && task.folder !== null) {
+      const snapshot = this.taskSnapshot(task.project, task.folder);
+      const todo = this.todoSnapshot(task.project, task.folder);
+      const T = todo.latestN;
+      if (
+        this.store.state.codingLocks[task.project]?.task === task.id &&
+        snapshot.status === "TODO_READY" &&
+        T !== null &&
+        todo.verdict === "PASS" &&
+        task.record.instructed.includes(`impl-v${T}`)
+      ) {
+        firstText = instructionImplement(T);
+      }
+    }
+    if (firstText !== undefined) {
+      // 첫 지시 있음 — 로컬 대기열로 전달 (S-4). 그 역할 undelivered 삭제(launched·queued 모두).
+      const outcome = this.deliverLaunch(
+        task,
+        role,
+        firstText,
+        mode === "resume" ? (resumeId ?? undefined) : undefined,
+        true,
+      );
+      this.removeUndelivered(task, role);
+      this.store.save();
+      this.broadcastTask(task);
+      this.broadcastLobby();
+      return outcome === "queued" ? { ok: true, status: 200, queued: true } : { ok: true, status: 200 };
+    }
+    // 첫 지시 없음 — 기존 코드 그대로 (즉시 launch·register·assign·이벤트).
     const pendingText = task.undelivered.find((u) => u.role === role)?.text;
     const result = this.launch({
       config: this.config,
@@ -531,12 +809,23 @@ export class Orchestrator {
   closeTask(taskId: string): { ok: boolean; status: number; error?: string } {
     const task = this.taskById(taskId);
     if (!task) return { ok: false, status: 404, error: "unknown task" };
+    // 로컬 대기열 — 그 작업의 대기 항목을 삭제(release보다 먼저) 후 세션 키로 해제 (S-4).
+    for (const ep of Object.keys(this.localQueue)) {
+      this.localQueue[ep] = this.localQueue[ep].filter((w) => w.taskId !== taskId);
+    }
+    // 코딩 잠금 — 그 작업의 대기 항목을 삭제 (S-4).
+    this.store.state.codingQueue = this.store.state.codingQueue.filter((w) => w.task !== taskId);
+    for (const key of [task.assigned.planner, task.assigned.verifier, task.assigned.coder]) {
+      if (key) this.releaseLocal(key);
+    }
     for (const key of [task.assigned.planner, task.assigned.verifier, task.assigned.coder]) {
       if (key) this.sessions.resolve(key, { action: "allow" }, "task-closed");
     }
     // close-task 이벤트를 작업 삭제 **전**에 그 작업 파일에 기록 (T4).
     this.store.appendTaskEvent(taskId, { type: "close-task" });
     delete this.store.state.tasks[taskId];
+    // 코딩 잠금 — 삭제 후 해제 (대기 항목이 있으면 잠금 전달) (S-4).
+    this.releaseCoding(task.project, taskId);
     this.store.save();
     this.refreshProjectInfo();
     // 작업이 이미 삭제 — getState(taskId)는 task: null을 반환해 그 창을 시작 화면으로 되돌림.

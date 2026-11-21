@@ -17,6 +17,8 @@ import {
   instructionTodoRevise,
   instructionChecklist,
   instructionCommitPlan,
+  instructionImplement,
+  instructionVerdictLine,
   type Reply,
 } from "./machine.js";
 import { shouldToast } from "./toast.js";
@@ -28,6 +30,7 @@ function setup(opts: {
   gitInfo?: (root: string) => { branch: string | null } | null;
   configPath?: string;
   updateConfig?: (p: string, mutate: (d: Record<string, unknown>) => void) => boolean;
+  endpoints?: Record<string, Record<string, string>>;
 } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "aism-orch-"));
   const plansDir = path.join(root, ".claude/plans");
@@ -36,7 +39,7 @@ function setup(opts: {
 
   const config: AismConfig = {
     port: 4400,
-    endpoints: { cloud: {}, local: {} },
+    endpoints: opts.endpoints ?? { cloud: {}, local: {} },
     roles: {
       planner: { endpoint: "cloud", prompt: [] },
       verifier: { endpoint: "local", prompt: [] },
@@ -128,11 +131,34 @@ function seedTask(store: Store, partial?: Partial<Task>): Task {
     assigned: { planner: null, verifier: null, coder: null },
     record: { notified: [], consecutiveBlocks: {}, instructed: [] },
     undelivered: [],
+    commitDone: false,
     ...partial,
   };
   store.state.tasks[id] = task;
   return task;
 }
+
+// 세션 정보 등록 도우미.
+function addSession(store: Store, key: string, role: "planner" | "verifier" | "coder", task: Task, folder: string | null) {
+  store.state.sessions[key] = {
+    role,
+    project: "EWE",
+    folder,
+    launchedAt: 0,
+    sessionIds: [],
+    activeSessionId: null,
+    switchedOnce: false,
+    task: task.id,
+  };
+}
+
+// private 접근 — 로컬 대기열 내부 상태 확인용.
+const internal = (o: Orchestrator) =>
+  o as unknown as {
+    localBusy: Record<string, string>;
+    localQueue: Record<string, Array<{ taskId: string; kind: "block" | "launch"; role: string; sessionKey?: string; text: string }>>;
+    launchRole(task: Task, role: "planner" | "verifier" | "coder", instruction?: string): string;
+  };
 
 describe("undeliverable (C2-1)", () => {
   it("PLANNER idle일 때 VERIFIER Stop(REVISE) → undelivered·notify·pendingAction.deliver → PLANNER Stop 시 삭제", () => {
@@ -1991,6 +2017,671 @@ describe("T3 — 멀티 작업", () => {
     expect(Object.keys(stA.sessions).sort()).toEqual(["planner-1", "verifier-1"]);
     const stB = orchestrator.getState(taskB.id);
     expect(Object.keys(stB.sessions)).toEqual(["coder-1"]);
+
+    env.cleanup();
+  });
+});
+
+describe("T3 — 로컬 모델 대기열 (S-4)", () => {
+  // VERIFIER·CODER는 로컬 엔드포인트(ANTHROPIC_BASE_URL), PLANNER는 클라우드.
+  const localEndpoints = { cloud: {}, local: { ANTHROPIC_BASE_URL: "http://x" } };
+
+  // 두 작업·두 VERIFIER 세션 준비 — plan-v1 IN_REVIEW + 판정 줄 없는 verify (MALFORMED → block).
+  function twoVerifierEnv() {
+    const env = setup({ endpoints: localEndpoints });
+    const { store, sessions, taskDir, folder } = env;
+    const taskA = seedTask(store, { folder, assigned: { planner: null, verifier: "verifier-1", coder: null } });
+    const taskB = seedTask(store, { folder, assigned: { planner: null, verifier: "verifier-2", coder: null } });
+    addSession(store, "verifier-1", "verifier", taskA, folder);
+    addSession(store, "verifier-2", "verifier", taskB, folder);
+    sessions.register("verifier-1", "working");
+    sessions.register("verifier-2", "working");
+    fs.mkdirSync(taskDir, { recursive: true });
+    fs.writeFileSync(path.join(taskDir, "plan-v1.md"), "Status: IN_REVIEW\n");
+    fs.writeFileSync(path.join(taskDir, "plan-v1-verify.md"), "# verify\n");
+    return { env, taskA, taskB };
+  }
+
+  it("A VERIFIER block 사용 중 → B VERIFIER block 대기 → A Stop → B에 block", () => {
+    const { env } = twoVerifierEnv();
+    const { orchestrator, sessions } = env;
+
+    // A VERIFIER Stop → block 전달 (로컬 사용 중 표시).
+    let replyA: Reply | null = null;
+    orchestrator.handleStop("verifier-1", { session_id: "v1" }, (r) => (replyA = r), () => {});
+    expect(replyA).toEqual({ action: "block", reason: instructionVerdictLine(1) });
+    expect(sessions.stateOf("verifier-1")).toBe("working");
+
+    // B VERIFIER Stop → 사용 중 → 미전달·대기 (parked 유지).
+    let replyB: Reply | null = null;
+    orchestrator.handleStop("verifier-2", { session_id: "v2" }, (r) => (replyB = r), () => {});
+    expect(replyB).toBeNull();
+    expect(sessions.stateOf("verifier-2")).toBe("parked");
+
+    // A VERIFIER Stop → 해제 → B에 block 전달.
+    orchestrator.handleStop("verifier-1", { session_id: "v1" }, () => {}, () => {});
+    expect(replyB).toEqual({ action: "block", reason: instructionVerdictLine(1) });
+    expect(sessions.stateOf("verifier-2")).toBe("working");
+
+    env.cleanup();
+  });
+
+  it("대기 중 대상이 idle이면 차례에 undelivered", () => {
+    const { env, taskB } = twoVerifierEnv();
+    const { orchestrator, sessions } = env;
+
+    orchestrator.handleStop("verifier-1", { session_id: "v1" }, () => {}, () => {}); // A → 사용 중
+    orchestrator.handleStop("verifier-2", { session_id: "v2" }, () => {}, () => {}); // B → 대기
+
+    // 대상이 idle → 차례에 undelivered.
+    sessions.register("verifier-2", "idle");
+    let closeCb: (() => void) | null = null;
+    sessions.onStop("verifier-1", "v1", () => {}, (cb) => (closeCb = cb));
+    closeCb!(); // detached → releaseLocal → drain
+    expect(taskB.undelivered).toEqual([{ role: "verifier", text: instructionVerdictLine(1) }]);
+
+    env.cleanup();
+  });
+
+  it("같은 작업·역할 재대기 → 최신 text", () => {
+    const { env, taskB } = twoVerifierEnv();
+    const { orchestrator, sessions, taskDir } = env;
+
+    orchestrator.handleStop("verifier-1", { session_id: "v1" }, () => {}, () => {}); // A → 사용 중
+    orchestrator.handleStop("verifier-2", { session_id: "v2" }, () => {}, () => {}); // B → 대기 (v1 판정 지시)
+
+    // plan-v2 추가 → 최신 판정 지시가 바뀜. B 재대기 → 같은 항목 교체.
+    fs.writeFileSync(path.join(taskDir, "plan-v2.md"), "Status: IN_REVIEW\n");
+    fs.writeFileSync(path.join(taskDir, "plan-v2-verify.md"), "# verify\n");
+    orchestrator.handleStop("verifier-2", { session_id: "v2" }, () => {}, () => {});
+    const q = internal(orchestrator).localQueue["local"] ?? [];
+    expect(q.filter((w) => w.taskId === taskB.id)).toHaveLength(1);
+    expect(q.find((w) => w.taskId === taskB.id)?.text).toBe(instructionVerdictLine(2));
+
+    // A Stop → B에 최신 text 전달.
+    let replyB: Reply | null = null;
+    sessions.onStop("verifier-2", "v2", (r) => (replyB = r), () => {}); // 새 pending으로 재파킹
+    orchestrator.handleStop("verifier-1", { session_id: "v1" }, () => {}, () => {});
+    expect(replyB).toEqual({ action: "block", reason: instructionVerdictLine(2) });
+
+    env.cleanup();
+  });
+
+  it("지시 없는 launch는 사용 중이어도 즉시·사용 중 표시 없음", () => {
+    const env = setup({ endpoints: localEndpoints });
+    const { orchestrator, store, sessions, taskDir, folder } = env;
+
+    const taskA = seedTask(store, { folder, assigned: { planner: null, verifier: "verifier-1", coder: null } });
+    const taskB = seedTask(store, { folder, assigned: { planner: null, verifier: null, coder: null } });
+    addSession(store, "verifier-1", "verifier", taskA, folder);
+    sessions.register("verifier-1", "working");
+    fs.mkdirSync(taskDir, { recursive: true });
+    fs.writeFileSync(path.join(taskDir, "plan-v1.md"), "Status: IN_REVIEW\n");
+    fs.writeFileSync(path.join(taskDir, "plan-v1-verify.md"), "# verify\n");
+
+    orchestrator.handleStop("verifier-1", { session_id: "v1" }, () => {}, () => {}); // A → 사용 중
+    expect(internal(orchestrator).localBusy["local"]).toBe("verifier-1");
+
+    // 지시 없는 launch — 사용 중이어도 즉시 실행, 사용 중 표시는 그대로.
+    const key = internal(orchestrator).launchRole(taskB, "verifier");
+    expect(key).toBeTruthy();
+    expect(taskB.assigned.verifier).toBe(key);
+    expect(internal(orchestrator).localBusy["local"]).toBe("verifier-1");
+
+    env.cleanup();
+  });
+
+  it("지시 있는 launch 대기 → 해제 후 launch", () => {
+    const env = setup({ endpoints: localEndpoints });
+    const { orchestrator, store, sessions, taskDir, folder, launchCalls } = env;
+
+    const taskA = seedTask(store, { folder, assigned: { planner: "planner-1", verifier: null, coder: null } });
+    const taskB = seedTask(store, { folder, assigned: { planner: "planner-2", verifier: null, coder: null } });
+    addSession(store, "planner-1", "planner", taskA, folder);
+    addSession(store, "planner-2", "planner", taskB, folder);
+    sessions.register("planner-1", "working");
+    sessions.register("planner-2", "working");
+    fs.mkdirSync(taskDir, { recursive: true });
+    fs.writeFileSync(path.join(taskDir, "plan-v1.md"), "Status: IN_REVIEW\n"); // verify 없음 → 행 3
+
+    // A PLANNER Stop → VERIFIER launch (지시) → 사용 중.
+    orchestrator.handleStop("planner-1", { session_id: "p1" }, () => {}, () => {});
+    expect(taskA.assigned.verifier).toBe("verifier-fake-1");
+    expect(launchCalls.at(-1)?.firstInstruction).toBe(instructionVerifyPlan(1));
+
+    // B PLANNER Stop → VERIFIER launch 지시 → 사용 중 → 대기.
+    orchestrator.handleStop("planner-2", { session_id: "p2" }, () => {}, () => {});
+    expect(taskB.assigned.verifier).toBeNull();
+    expect(launchCalls).toHaveLength(1);
+
+    // A VERIFIER Stop → 해제 → B VERIFIER launch (지시·배정).
+    orchestrator.handleStop("verifier-fake-1", { session_id: "vf1" }, () => {}, () => {});
+    expect(taskB.assigned.verifier).toBe("verifier-fake-2");
+    const last = launchCalls.at(-1);
+    expect(last?.firstInstruction).toBe(instructionVerifyPlan(1));
+    expect(last?.task).toBe(taskB.id);
+
+    env.cleanup();
+  });
+
+  it("detached 시 해제 — 대기 항목 전달", () => {
+    const { env } = twoVerifierEnv();
+    const { orchestrator, sessions } = env;
+
+    orchestrator.handleStop("verifier-1", { session_id: "v1" }, () => {}, () => {}); // A → 사용 중
+    let replyB: Reply | null = null;
+    orchestrator.handleStop("verifier-2", { session_id: "v2" }, (r) => (replyB = r), () => {}); // B → 대기
+
+    // A detached → releaseLocal → B에 block.
+    let closeCb: (() => void) | null = null;
+    sessions.onStop("verifier-1", "v1", () => {}, (cb) => (closeCb = cb));
+    closeCb!();
+    expect(sessions.stateOf("verifier-1")).toBe("detached");
+    expect(replyB).toEqual({ action: "block", reason: instructionVerdictLine(1) });
+    expect(sessions.stateOf("verifier-2")).toBe("working");
+
+    env.cleanup();
+  });
+
+  it("closeTask — 종료 작업 대기 항목 삭제·세션 키 해제", () => {
+    const { env, taskA, taskB } = twoVerifierEnv();
+    const { orchestrator, store } = env;
+
+    orchestrator.handleStop("verifier-1", { session_id: "v1" }, () => {}, () => {}); // A → 사용 중
+    let replyB: Reply | null = null;
+    orchestrator.handleStop("verifier-2", { session_id: "v2" }, (r) => (replyB = r), () => {}); // B → 대기
+
+    // B 종료 — 대기 항목 삭제, 세션 allow.
+    const r = orchestrator.closeTask(taskB.id);
+    expect(r).toEqual({ ok: true, status: 200 });
+    expect(store.state.tasks[taskB.id]).toBeUndefined();
+    expect(replyB).toEqual({ action: "allow" });
+    expect((internal(orchestrator).localQueue["local"] ?? []).filter((w) => w.taskId === taskB.id)).toHaveLength(0);
+
+    // A 종료 — 사용 중 표시 해제 (대기 항목 없음).
+    const r2 = orchestrator.closeTask(taskA.id);
+    expect(r2).toEqual({ ok: true, status: 200 });
+    expect(internal(orchestrator).localBusy["local"]).toBeUndefined();
+
+    env.cleanup();
+  });
+
+  it("클라우드 역할은 대기열 영향 없음", () => {
+    const env = setup({ endpoints: localEndpoints });
+    const { orchestrator, store, sessions, taskDir, folder } = env;
+
+    const taskA = seedTask(store, { folder, assigned: { planner: "planner-1", verifier: null, coder: null } });
+    const taskB = seedTask(store, { folder, assigned: { planner: "planner-2", verifier: null, coder: null } });
+    addSession(store, "planner-1", "planner", taskA, folder);
+    addSession(store, "planner-2", "planner", taskB, folder);
+    sessions.register("planner-1", "working");
+    sessions.register("planner-2", "working");
+    fs.mkdirSync(taskDir, { recursive: true });
+    fs.writeFileSync(path.join(taskDir, "plan-v1.md"), "Status: IN_REVIEW\n");
+    fs.writeFileSync(path.join(taskDir, "plan-v1-verify.md"), "# verify\n\n판정: PASS\n");
+
+    // PLANNER는 클라우드 — 두 Stop 모두 즉시 block.
+    let replyA: Reply | null = null;
+    orchestrator.handleStop("planner-1", { session_id: "p1" }, (r) => (replyA = r), () => {});
+    expect(replyA).toEqual({ action: "block", reason: instructionApproveAndTodo(1) });
+    let replyB: Reply | null = null;
+    orchestrator.handleStop("planner-2", { session_id: "p2" }, (r) => (replyB = r), () => {});
+    expect(replyB).toEqual({ action: "block", reason: instructionApproveAndTodo(1) });
+
+    env.cleanup();
+  });
+});
+
+describe("T4 — 프로젝트별 코딩 잠금 (S-4)", () => {
+  // 두 작업·두 CODER 세션 준비 — plan-v1 TODO_READY + todo-v1 PASS (c6 → 구현 지시 block).
+  function twoCoderEnv(opts: Parameters<typeof setup>[0] = {}) {
+    const env = setup(opts);
+    const { store, sessions, taskDir, folder } = env;
+    const taskA = seedTask(store, { folder, assigned: { planner: null, verifier: null, coder: "coder-1" } });
+    const taskB = seedTask(store, { folder, assigned: { planner: null, verifier: null, coder: "coder-2" } });
+    addSession(store, "coder-1", "coder", taskA, folder);
+    addSession(store, "coder-2", "coder", taskB, folder);
+    sessions.register("coder-1", "working");
+    sessions.register("coder-2", "working");
+    fs.mkdirSync(taskDir, { recursive: true });
+    fs.writeFileSync(path.join(taskDir, "plan-v1.md"), "Status: TODO_READY\n");
+    fs.writeFileSync(path.join(taskDir, "todo-v1.md"), "- [ ] T1\n");
+    fs.writeFileSync(path.join(taskDir, "todo-v1-verify.md"), "# verify\n\n판정: PASS\n");
+    return { env, taskA, taskB };
+  }
+
+  it("A c6 → 잠금 A·전달, B c6 → 미전달·codingQueue 저장", () => {
+    const { env, taskA, taskB } = twoCoderEnv();
+    const { orchestrator, store, sessions } = env;
+
+    let replyA: Reply | null = null;
+    orchestrator.handleStop("coder-1", { session_id: "c1" }, (r) => (replyA = r), () => {});
+    expect(replyA).toEqual({ action: "block", reason: instructionImplement(1) });
+    expect(store.state.codingLocks["EWE"]?.task).toBe(taskA.id);
+
+    let replyB: Reply | null = null;
+    orchestrator.handleStop("coder-2", { session_id: "c2" }, (r) => (replyB = r), () => {});
+    expect(replyB).toBeNull();
+    expect(sessions.stateOf("coder-2")).toBe("parked");
+    expect(store.state.codingQueue).toEqual([
+      { task: taskB.id, sessionKey: "coder-2", text: instructionImplement(1), since: expect.any(Number) },
+    ]);
+
+    env.cleanup();
+  });
+
+  it("commitDone(A) → commitDone true·잠금 B·B에 block", () => {
+    const { env, taskA, taskB } = twoCoderEnv({ gitInfo: () => ({ branch: "main" }) });
+    const { orchestrator, store, sessions } = env;
+
+    orchestrator.handleStop("coder-1", { session_id: "c1" }, () => {}, () => {}); // A → 잠금·전달
+    let replyB: Reply | null = null;
+    orchestrator.handleStop("coder-2", { session_id: "c2" }, (r) => (replyB = r), () => {}); // B → 대기
+
+    const r = orchestrator.commitDone(taskA.id);
+    expect(r).toEqual({ ok: true, status: 200 });
+    expect(taskA.commitDone).toBe(true);
+    expect(store.state.codingLocks["EWE"]?.task).toBe(taskB.id);
+    expect(replyB).toEqual({ action: "block", reason: instructionImplement(1) });
+    expect(sessions.stateOf("coder-2")).toBe("working");
+
+    env.cleanup();
+  });
+
+  it("git 아님 CODER DONE Stop → 잠금 해제, BLOCKED Stop → 유지", () => {
+    const env = setup(); // gitInfo 기본 null (git 아님)
+    const { orchestrator, store, sessions, taskDir, folder } = env;
+
+    const taskA = seedTask(store, { folder, assigned: { planner: null, verifier: null, coder: "coder-1" } });
+    addSession(store, "coder-1", "coder", taskA, folder);
+    sessions.register("coder-1", "working");
+    fs.mkdirSync(taskDir, { recursive: true });
+    fs.writeFileSync(path.join(taskDir, "plan-v1.md"), "Status: TODO_READY\n");
+    fs.writeFileSync(path.join(taskDir, "todo-v1.md"), "- [ ] T1\n");
+    fs.writeFileSync(path.join(taskDir, "todo-v1-verify.md"), "# verify\n\n판정: PASS\n");
+
+    orchestrator.handleStop("coder-1", { session_id: "c1" }, () => {}, () => {}); // c6 → 잠금
+    expect(store.state.codingLocks["EWE"]?.task).toBe(taskA.id);
+
+    // DONE Stop → allow + 잠금 해제.
+    fs.writeFileSync(path.join(taskDir, "plan-v1.md"), "Status: DONE\n");
+    let reply: Reply | null = null;
+    orchestrator.handleStop("coder-1", { session_id: "c1" }, (r) => (reply = r), () => {});
+    expect(reply).toEqual({ action: "allow" });
+    expect(store.state.codingLocks["EWE"]).toBeUndefined();
+
+    // BLOCKED — 새 작업 A2가 잠금, BLOCKED Stop → 유지.
+    const taskA2 = seedTask(store, { folder, assigned: { planner: null, verifier: null, coder: "coder-3" } });
+    addSession(store, "coder-3", "coder", taskA2, folder);
+    sessions.register("coder-3", "working");
+    fs.writeFileSync(path.join(taskDir, "plan-v1.md"), "Status: TODO_READY\n");
+    orchestrator.handleStop("coder-3", { session_id: "c3" }, () => {}, () => {}); // c6 → 잠금 A2
+    expect(store.state.codingLocks["EWE"]?.task).toBe(taskA2.id);
+    fs.writeFileSync(path.join(taskDir, "plan-v1.md"), "Status: BLOCKED\n");
+    orchestrator.handleStop("coder-3", { session_id: "c3" }, () => {}, () => {}); // c8 → allow
+    expect(store.state.codingLocks["EWE"]?.task).toBe(taskA2.id);
+
+    env.cleanup();
+  });
+
+  it("closeTask(A) → B에 전달", () => {
+    const { env, taskA, taskB } = twoCoderEnv({ gitInfo: () => ({ branch: "main" }) });
+    const { orchestrator, store, sessions } = env;
+
+    orchestrator.handleStop("coder-1", { session_id: "c1" }, () => {}, () => {}); // A → 잠금·전달
+    let replyB: Reply | null = null;
+    orchestrator.handleStop("coder-2", { session_id: "c2" }, (r) => (replyB = r), () => {}); // B → 대기
+
+    const r = orchestrator.closeTask(taskA.id);
+    expect(r).toEqual({ ok: true, status: 200 });
+    expect(store.state.tasks[taskA.id]).toBeUndefined();
+    expect(store.state.codingLocks["EWE"]?.task).toBe(taskB.id);
+    expect(replyB).toEqual({ action: "block", reason: instructionImplement(1) });
+    expect(sessions.stateOf("coder-2")).toBe("working");
+
+    env.cleanup();
+  });
+
+  it("재시작 — 잠금·대기 유지, 해제 시 B detached → undelivered", () => {
+    const env = setup({ gitInfo: () => ({ branch: "main" }) });
+    const { orchestrator, store, sessions, taskDir, folder } = env;
+
+    const taskA = seedTask(store, { folder, assigned: { planner: null, verifier: null, coder: "coder-1" } });
+    const taskB = seedTask(store, { folder, assigned: { planner: null, verifier: null, coder: "coder-2" } });
+    addSession(store, "coder-1", "coder", taskA, folder);
+    addSession(store, "coder-2", "coder", taskB, folder);
+    sessions.register("coder-1", "working");
+    sessions.register("coder-2", "working");
+    fs.mkdirSync(taskDir, { recursive: true });
+    fs.writeFileSync(path.join(taskDir, "plan-v1.md"), "Status: TODO_READY\n");
+    fs.writeFileSync(path.join(taskDir, "todo-v1.md"), "- [ ] T1\n");
+    fs.writeFileSync(path.join(taskDir, "todo-v1-verify.md"), "# verify\n\n판정: PASS\n");
+
+    orchestrator.handleStop("coder-1", { session_id: "c1" }, () => {}, () => {}); // A → 잠금
+    orchestrator.handleStop("coder-2", { session_id: "c2" }, () => {}, () => {}); // B → 대기
+    expect(store.state.codingLocks["EWE"]?.task).toBe(taskA.id);
+    expect(store.state.codingQueue.map((w) => w.task)).toEqual([taskB.id]);
+
+    // 재시작 — 같은 store로 새 Orchestrator.
+    const sessions2 = new Sessions(store, 3300, { setTimer: () => ({} as Timer), clearTimer: () => {} });
+    const orchestrator2 = new Orchestrator({
+      config: env.config,
+      store,
+      sessions: sessions2,
+      launch: () => {
+        throw new Error("unused");
+      },
+      aismRoot: env.root,
+      toast: () => {},
+      gitInfo: () => ({ branch: "main" }),
+    });
+    // 잠금·대기 유지.
+    expect(store.state.codingLocks["EWE"]?.task).toBe(taskA.id);
+    expect(store.state.codingQueue.map((w) => w.task)).toEqual([taskB.id]);
+
+    // 해제 — B 대상이 detached(새 sessions에 없음) → undelivered.
+    const r = orchestrator2.commitDone(taskA.id);
+    expect(r).toEqual({ ok: true, status: 200 });
+    expect(store.state.codingLocks["EWE"]?.task).toBe(taskB.id);
+    expect(taskB.undelivered).toEqual([{ role: "coder", text: instructionImplement(1) }]);
+
+    env.cleanup();
+  });
+
+  it("commitDone — 404·409·중복 200", () => {
+    const env = setup(); // git 아님
+    const { orchestrator, store } = env;
+    const taskA = seedTask(store);
+    expect(orchestrator.commitDone("nope")).toEqual({ ok: false, status: 404, error: "unknown task" });
+    expect(orchestrator.commitDone(taskA.id)).toEqual({ ok: false, status: 409, error: "not a git project" });
+
+    const env2 = setup({ gitInfo: () => ({ branch: "main" }) });
+    const taskB = seedTask(env2.store);
+    expect(env2.orchestrator.commitDone(taskB.id)).toEqual({ ok: true, status: 200 });
+    expect(taskB.commitDone).toBe(true);
+    expect(env2.orchestrator.commitDone(taskB.id)).toEqual({ ok: true, status: 200 }); // 중복
+
+    env.cleanup();
+    env2.cleanup();
+  });
+
+  it("잠금 받은 B가 로컬 사용 중이면 로컬 대기·잠금은 B", () => {
+    const { env, taskA, taskB } = twoCoderEnv({
+      endpoints: { cloud: {}, local: { ANTHROPIC_BASE_URL: "http://x" } },
+      gitInfo: () => ({ branch: "main" }),
+    });
+    const { orchestrator, store } = env;
+
+    orchestrator.handleStop("coder-1", { session_id: "c1" }, () => {}, () => {}); // A → 잠금 + 로컬 사용 중
+    expect(internal(orchestrator).localBusy["local"]).toBe("coder-1");
+    let replyB: Reply | null = null;
+    orchestrator.handleStop("coder-2", { session_id: "c2" }, (r) => (replyB = r), () => {}); // B → codingQueue
+
+    const r = orchestrator.commitDone(taskA.id);
+    expect(r).toEqual({ ok: true, status: 200 });
+    expect(store.state.codingLocks["EWE"]?.task).toBe(taskB.id); // 잠금은 B
+    expect(replyB).toBeNull(); // 로컬 사용 중 → 미전달
+    const q = internal(orchestrator).localQueue["local"] ?? [];
+    expect(q.filter((w) => w.taskId === taskB.id)).toHaveLength(1);
+    expect(q.find((w) => w.taskId === taskB.id)?.text).toBe(instructionImplement(1));
+
+    env.cleanup();
+  });
+});
+
+describe("T5 — relaunch 첫 지시 규칙 (S-4)", () => {
+  const localEndpoints = { cloud: {}, local: { ANTHROPIC_BASE_URL: "http://x" } };
+
+  // taskA CODER 세션 + TODO_READY·todo PASS 준비 (c6 → 구현 지시).
+  function coderEnv(opts: Parameters<typeof setup>[0] = {}) {
+    const env = setup(opts);
+    const { store, sessions, taskDir, folder } = env;
+    const taskA = seedTask(store, { folder, assigned: { planner: null, verifier: null, coder: "coder-1" } });
+    addSession(store, "coder-1", "coder", taskA, folder);
+    store.state.sessions["coder-1"].sessionIds = ["c1"];
+    store.state.sessions["coder-1"].activeSessionId = "c1";
+    sessions.register("coder-1", "working");
+    fs.mkdirSync(taskDir, { recursive: true });
+    fs.writeFileSync(path.join(taskDir, "plan-v1.md"), "Status: TODO_READY\n");
+    fs.writeFileSync(path.join(taskDir, "todo-v1.md"), "- [ ] T1\n");
+    fs.writeFileSync(path.join(taskDir, "todo-v1-verify.md"), "# verify\n\n판정: PASS\n");
+    return { env, taskA };
+  }
+
+  it("재시작 후 잠금 가진 A CODER relaunch(resume) → 첫 지시 instructionImplement(T)", () => {
+    const { env, taskA } = coderEnv({ gitInfo: () => ({ branch: "main" }) });
+    const { store } = env;
+
+    env.orchestrator.handleStop("coder-1", { session_id: "c1" }, () => {}, () => {}); // c6 → 잠금·기록
+    expect(store.state.codingLocks["EWE"]?.task).toBe(taskA.id);
+    expect(taskA.record.instructed).toContain("impl-v1");
+
+    // 재시작 — 같은 store로 새 Orchestrator.
+    const sessions2 = new Sessions(store, 3300, { setTimer: () => ({} as Timer), clearTimer: () => {} });
+    const launchCalls: LaunchOptions[] = [];
+    const orchestrator2 = new Orchestrator({
+      config: env.config,
+      store,
+      sessions: sessions2,
+      launch: (opts) => {
+        launchCalls.push(opts);
+        const sessionKey = `coder-fake-${launchCalls.length}`;
+        return { sessionKey, dir: "/fake" };
+      },
+      aismRoot: env.root,
+      toast: () => {},
+      gitInfo: () => ({ branch: "main" }),
+    });
+
+    const result = orchestrator2.relaunch(taskA.id, "coder", "resume");
+    expect(result).toEqual({ ok: true, status: 200 });
+    const last = launchCalls.at(-1);
+    expect(last?.firstInstruction).toBe(instructionImplement(1));
+    expect(last?.resumeSessionId).toBe("c1");
+    expect(last?.task).toBe(taskA.id);
+    expect(taskA.assigned.coder).not.toBe("coder-1");
+    expect(sessions2.stateOf(taskA.assigned.coder!)).toBe("working");
+
+    env.cleanup();
+  });
+
+  it("undelivered 우선", () => {
+    const { env, taskA } = coderEnv({ gitInfo: () => ({ branch: "main" }) });
+    const { launchCalls } = env;
+
+    env.orchestrator.handleStop("coder-1", { session_id: "c1" }, () => {}, () => {}); // c6 → 잠금·기록
+    taskA.undelivered.push({ role: "coder", text: "custom instruction" });
+
+    const result = env.orchestrator.relaunch(taskA.id, "coder", "new");
+    expect(result).toEqual({ ok: true, status: 200 });
+    expect(launchCalls.at(-1)?.firstInstruction).toBe("custom instruction");
+    expect(taskA.undelivered).toEqual([]);
+
+    env.cleanup();
+  });
+
+  it("잠금 없음·impl-v<T> 미기록·IN_PROGRESS → 첫 지시 없음·즉시 launch", () => {
+    const env = setup();
+    const { store, sessions, taskDir, folder, launchCalls } = env;
+
+    const taskA = seedTask(store, { folder, assigned: { planner: null, verifier: null, coder: "coder-1" } });
+    addSession(store, "coder-1", "coder", taskA, folder);
+    sessions.register("coder-1", "idle");
+    fs.mkdirSync(taskDir, { recursive: true });
+    fs.writeFileSync(path.join(taskDir, "plan-v1.md"), "Status: IN_PROGRESS\n");
+
+    const before = launchCalls.length;
+    const result = env.orchestrator.relaunch(taskA.id, "coder", "new");
+    expect(result).toEqual({ ok: true, status: 200 });
+    expect(launchCalls).toHaveLength(before + 1);
+    expect(launchCalls.at(-1)?.firstInstruction).toBeUndefined();
+    expect(taskA.assigned.coder).not.toBe("coder-1");
+
+    env.cleanup();
+  });
+
+  it("로컬 사용 중 지시 있는 relaunch → queued → 사용 중 세션 Stop → launch(첫 지시·resumeSessionId)·assign", () => {
+    const { env, taskA } = coderEnv({ endpoints: localEndpoints, gitInfo: () => ({ branch: "main" }) });
+    const { launchCalls } = env;
+
+    env.orchestrator.handleStop("coder-1", { session_id: "c1" }, () => {}, () => {}); // c6 → 잠금 + 로컬 사용 중
+    expect(internal(env.orchestrator).localBusy["local"]).toBe("coder-1");
+
+    const before = launchCalls.length;
+    const result = env.orchestrator.relaunch(taskA.id, "coder", "resume");
+    expect(result).toEqual({ ok: true, status: 200, queued: true });
+    expect(launchCalls).toHaveLength(before); // launch 미호출
+    expect(taskA.assigned.coder).toBe("coder-1"); // assign 불변
+
+    // 사용 중 세션 Stop → launch(첫 지시·resumeSessionId)·assign.
+    env.orchestrator.handleStop("coder-1", { session_id: "c1" }, () => {}, () => {});
+    const last = launchCalls.at(-1);
+    expect(last?.firstInstruction).toBe(instructionImplement(1));
+    expect(last?.resumeSessionId).toBe("c1");
+    expect(last?.task).toBe(taskA.id);
+    expect(taskA.assigned.coder).not.toBe("coder-1");
+
+    env.cleanup();
+  });
+
+  it("대기 중 다시 relaunch → 기존 항목 text가 첫 지시·기존 항목 삭제(사용 중이면 새 항목 하나)", () => {
+    const env = setup({ endpoints: localEndpoints, gitInfo: () => ({ branch: "main" }) });
+    const { store, sessions, taskDir, folder, launchCalls } = env;
+
+    const taskA = seedTask(store, { folder, assigned: { planner: null, verifier: null, coder: "coder-1" } });
+    const taskB = seedTask(store, { folder, assigned: { planner: null, verifier: null, coder: "coder-2" } });
+    addSession(store, "coder-1", "coder", taskA, folder);
+    addSession(store, "coder-2", "coder", taskB, folder);
+    sessions.register("coder-1", "working");
+    sessions.register("coder-2", "working");
+    fs.mkdirSync(taskDir, { recursive: true });
+    fs.writeFileSync(path.join(taskDir, "plan-v1.md"), "Status: TODO_READY\n");
+    fs.writeFileSync(path.join(taskDir, "todo-v1.md"), "- [ ] T1\n");
+    fs.writeFileSync(path.join(taskDir, "todo-v1-verify.md"), "# verify\n\n판정: PASS\n");
+
+    env.orchestrator.handleStop("coder-1", { session_id: "c1" }, () => {}, () => {}); // A → 잠금 + 로컬 사용 중
+    taskB.undelivered.push({ role: "coder", text: "T1" });
+
+    const r1 = env.orchestrator.relaunch(taskB.id, "coder", "new");
+    expect(r1).toEqual({ ok: true, status: 200, queued: true });
+
+    // 다시 relaunch → 기존 항목 text가 첫 지시·기존 항목 삭제 → 새 항목 하나.
+    const r2 = env.orchestrator.relaunch(taskB.id, "coder", "new");
+    expect(r2).toEqual({ ok: true, status: 200, queued: true });
+    const entries = (internal(env.orchestrator).localQueue["local"] ?? []).filter((w) => w.taskId === taskB.id);
+    expect(entries).toHaveLength(1);
+    expect(entries[0].text).toBe("T1");
+
+    // 사용 중 세션 Stop → launch.
+    env.orchestrator.handleStop("coder-1", { session_id: "c1" }, () => {}, () => {});
+    const last = launchCalls.at(-1);
+    expect(last?.firstInstruction).toBe("T1");
+    expect(last?.task).toBe(taskB.id);
+
+    env.cleanup();
+  });
+
+  it("block 대기 항목 역할도 같음 — text가 첫 지시·항목 삭제", () => {
+    const env = setup({ endpoints: localEndpoints, gitInfo: () => ({ branch: "main" }) });
+    const { store, sessions, taskDir, folder } = env;
+
+    const taskA = seedTask(store, { folder, assigned: { planner: null, verifier: null, coder: "coder-1" } });
+    const taskB = seedTask(store, { folder, assigned: { planner: null, verifier: null, coder: "coder-2" } });
+    addSession(store, "coder-1", "coder", taskA, folder);
+    addSession(store, "coder-2", "coder", taskB, folder);
+    sessions.register("coder-1", "working");
+    sessions.register("coder-2", "working");
+    fs.mkdirSync(taskDir, { recursive: true });
+    fs.writeFileSync(path.join(taskDir, "plan-v1.md"), "Status: TODO_READY\n");
+    fs.writeFileSync(path.join(taskDir, "todo-v1.md"), "- [ ] T1\n");
+    fs.writeFileSync(path.join(taskDir, "todo-v1-verify.md"), "# verify\n\n판정: PASS\n");
+
+    env.orchestrator.handleStop("coder-1", { session_id: "c1" }, () => {}, () => {}); // A → 잠금 + 로컬 사용 중
+    env.orchestrator.handleStop("coder-2", { session_id: "c2" }, () => {}, () => {}); // B → codingQueue
+    expect(store.state.codingQueue.map((w) => w.task)).toEqual([taskB.id]);
+
+    // commitDone(A) → B 잠금 → 로컬 사용 중 → B block이 로컬 대기.
+    env.orchestrator.commitDone(taskA.id);
+    const blockEntries = (internal(env.orchestrator).localQueue["local"] ?? []).filter(
+      (w) => w.taskId === taskB.id && w.kind === "block",
+    );
+    expect(blockEntries).toHaveLength(1);
+
+    // B 대상 idle(파킹 타임아웃 등) → relaunch 허용. block 대기 항목 text가 첫 지시·항목 삭제.
+    sessions.register("coder-2", "idle");
+    const r = env.orchestrator.relaunch(taskB.id, "coder", "new");
+    expect(r).toEqual({ ok: true, status: 200, queued: true });
+    const entries = (internal(env.orchestrator).localQueue["local"] ?? []).filter((w) => w.taskId === taskB.id);
+    expect(entries).toHaveLength(1);
+    expect(entries[0].kind).toBe("launch");
+    expect(entries[0].text).toBe(instructionImplement(1));
+
+    env.cleanup();
+  });
+});
+
+describe("T6 — 표시 queued·queue·commit-done (S-4)", () => {
+  const localEndpoints = { cloud: {}, local: { ANTHROPIC_BASE_URL: "http://x" } };
+
+  it("대기 역할 assignedDisplay = queued(배정 없는 대기 launch 포함), queue.reason local/coding", () => {
+    const env = setup({ endpoints: localEndpoints, gitInfo: () => ({ branch: "main" }) });
+    const { store, sessions, taskDir, folder } = env;
+
+    const taskA = seedTask(store, { folder, assigned: { planner: null, verifier: null, coder: "coder-1" } });
+    const taskB = seedTask(store, { folder, assigned: { planner: null, verifier: null, coder: "coder-2" } });
+    addSession(store, "coder-1", "coder", taskA, folder);
+    addSession(store, "coder-2", "coder", taskB, folder);
+    sessions.register("coder-1", "working");
+    sessions.register("coder-2", "working");
+    fs.mkdirSync(taskDir, { recursive: true });
+    fs.writeFileSync(path.join(taskDir, "plan-v1.md"), "Status: TODO_READY\n");
+    fs.writeFileSync(path.join(taskDir, "todo-v1.md"), "- [ ] T1\n");
+    fs.writeFileSync(path.join(taskDir, "todo-v1-verify.md"), "# verify\n\n판정: PASS\n");
+
+    env.orchestrator.handleStop("coder-1", { session_id: "c1" }, () => {}, () => {}); // A → 잠금 + 로컬 사용 중
+    env.orchestrator.handleStop("coder-2", { session_id: "c2" }, () => {}, () => {}); // B → codingQueue
+
+    const stB = env.orchestrator.getState(taskB.id);
+    expect(stB.assignedDisplay.coder).toBe("queued");
+    expect(stB.queue).toEqual({ role: "coder", reason: "coding" });
+
+    // 배정 없는 대기 launch — verify 삭제 후 taskC PLANNER Stop → CODER launch 지시 → 로컬 사용 중 → 대기.
+    fs.rmSync(path.join(taskDir, "todo-v1-verify.md"));
+    const taskC = seedTask(store, { folder, assigned: { planner: "planner-1", verifier: null, coder: null } });
+    addSession(store, "planner-1", "planner", taskC, folder);
+    sessions.register("planner-1", "working");
+    env.orchestrator.handleStop("planner-1", { session_id: "p1" }, () => {}, () => {});
+
+    const stC = env.orchestrator.getState(taskC.id);
+    expect(stC.assignedDisplay.coder).toBe("queued");
+    expect(stC.queue).toEqual({ role: "coder", reason: "local" });
+
+    env.cleanup();
+  });
+
+  it("commitDone 후 done.commit === 'done'·CODER 배지 your-turn 아님", () => {
+    const env = setup({ gitInfo: () => ({ branch: "main" }) });
+    const { store, sessions, taskDir, folder } = env;
+
+    const task = seedTask(store, { folder, assigned: { planner: null, verifier: null, coder: "coder-1" } });
+    addSession(store, "coder-1", "coder", task, folder);
+    sessions.register("coder-1", "idle");
+    fs.mkdirSync(taskDir, { recursive: true });
+    fs.writeFileSync(path.join(taskDir, "plan-v1.md"), "Status: DONE\n");
+    fs.writeFileSync(path.join(taskDir, "todo-v1.md"), "- [x] T1\n");
+    fs.writeFileSync(path.join(taskDir, "todo-v1-verify.md"), "# verify\n\n판정: PASS\n");
+    fs.writeFileSync(path.join(taskDir, "todo-v1-checklist.md"), "- [ ] 확인\n");
+    fs.writeFileSync(path.join(taskDir, "todo-v1-commit.md"), "# todo-v1 커밋 계획\n## 커밋 1\n- 메시지: m\n");
+
+    // 이전 — done.commit planned·CODER your-turn.
+    expect(env.orchestrator.pendingAction(task)).toEqual({ kind: "done", t: 1, commit: "planned" });
+    expect(env.orchestrator.getState(task.id).assignedDisplay.coder).toBe("your-turn");
+
+    // 이후 — done.commit done·CODER your-turn 아님.
+    const r = env.orchestrator.commitDone(task.id);
+    expect(r).toEqual({ ok: true, status: 200 });
+    expect(env.orchestrator.pendingAction(task)).toEqual({ kind: "done", t: 1, commit: "done" });
+    expect(env.orchestrator.getState(task.id).assignedDisplay.coder).toBe("idle");
 
     env.cleanup();
   });

@@ -100,13 +100,20 @@ async function main(): Promise<void> {
     if (mode !== undefined && mode !== "new" && mode !== "resume")
       return reply.code(400).send({ error: "invalid mode" });
     const result = orchestrator.relaunch(task, role, (mode as "new" | "resume" | undefined) ?? "new");
-    return reply.code(result.status).send(result.ok ? { ok: true } : { error: result.error });
+    return reply.code(result.status).send(result.ok ? { ok: true, ...(result.queued ? { queued: true } : {}) } : { error: result.error });
   });
 
   app.post("/api/tasks/close", async (request, reply) => {
     const { task } = (request.body ?? {}) as { task?: string };
     if (typeof task !== "string") return reply.code(400).send({ error: "missing task" });
     const result = orchestrator.closeTask(task);
+    return reply.code(result.status).send(result.ok ? { ok: true } : { error: result.error });
+  });
+
+  app.post("/api/tasks/commit-done", async (request, reply) => {
+    const { task } = (request.body ?? {}) as { task?: string };
+    if (typeof task !== "string") return reply.code(400).send({ error: "missing task" });
+    const result = orchestrator.commitDone(task);
     return reply.code(result.status).send(result.ok ? { ok: true } : { error: result.error });
   });
 
