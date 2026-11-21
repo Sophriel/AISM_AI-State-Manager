@@ -4,7 +4,7 @@ This project uses three separate Claude Code sessions. You are exactly ONE of th
 Never perform another session's job. If the work requires another role, stop and tell the user which session to run next.
 
     PLANNER  --plan-vN.md-->  VERIFIER  --plan-vN-verify.md-->  PLANNER --plan-v(N+1).md--> ...   (until verdict = PASS)
-    PLANNER  --todo-vN.md-->  CODER  --todo-vN-verify.md-->  PLANNER --todo-v(N+1).md--> ...   (until CODER verdict = PASS, then CODER implements)
+    PLANNER  --todo-vN.md-->  CODER  --todo-vN-verify.md-->  PLANNER --todo-v(N+1).md--> ...   (until CODER verdict = PASS, then CODER waits for the implement instruction and implements)
 
 Language: talk to the user in Korean. Write documents in Korean. Keep identifiers, file paths and code in original form.
 
@@ -58,7 +58,8 @@ The last line of every plan-vN-verify.md and todo-vN-verify.md is exactly one of
 | plan-vN-verify.md 판정: PASS | PLANNER sets APPROVED, writes todo-v1.md, sets TODO_READY |
 | Status TODO_READY, no todo-vN-verify.md | CODER reviews the latest todo |
 | todo-vN-verify.md 판정: REVISE | PLANNER writes todo-v(N+1).md (Status stays TODO_READY) |
-| todo-vN-verify.md 판정: PASS, or Status IN_PROGRESS | CODER implements |
+| todo-vN-verify.md 판정: PASS, Status TODO_READY | CODER waits for the implement instruction, then implements |
+| Status IN_PROGRESS | CODER implements |
 | Status BLOCKED | PLANNER (read code-log.md) |
 
 ## Human decisions

@@ -9,7 +9,7 @@ The latest plan's Status must be TODO_READY or IN_PROGRESS. Otherwise stop and t
 ## Phase 1 — Review the todo (no code edits yet)
 First check the latest todo-vN.md's verify file (todo-vN-verify.md):
 1. It does not exist → review the todo as below.
-2. It exists and its last line is `판정: PASS` → do NOT review again and do NOT rewrite it. Go to Phase 2 and resume: read code-log.md and continue from the first unticked item in todo-vN.md.
+2. It exists and its last line is `판정: PASS` → do NOT review again and do NOT rewrite it. If the latest plan's Status is IN_PROGRESS, go to Phase 2 and resume from the first unticked item (read code-log.md). If it is TODO_READY, start Phase 2 only when you have received the implement instruction — the server sends exactly `todo-vN-verify.md가 PASS다. todo-vN.md를 순서대로 구현해.`; any other user message telling you to implement the todo counts the same. Otherwise stop and wait for the implement instruction.
 3. It exists and its last line is `판정: REVISE` → stop and route to PLANNER.
 4. It exists but its last line is neither → do not touch it. Stop and tell the user the verify file has no verdict line.
 
@@ -29,8 +29,10 @@ Write todo-vN-verify.md:
     판정: PASS | REVISE
 
 PASS only if every item is OK. Otherwise REVISE, end your turn, and route to PLANNER. Do not guess. Do not "fix" the todo yourself.
+After writing `판정: PASS`, end your turn — do not start Phase 2 in the same turn. Say `todo 검토 PASS — 서버의 구현 지시를 기다립니다.` and end with `▶ 다음 세션: CODER` / `▶ 이유: 구현 지시 대기`.
 
 ## Phase 2 — Apply (only after 판정: PASS on the latest todo)
+Start Phase 2 only after receiving the implement instruction (see Phase 1).
 Set Status: IN_PROGRESS. Then, in todo order, one item at a time:
 1. Make exactly the change described. Nothing outside the item's scope — no drive-by refactors, renames or formatting changes.
 2. Tick the box in the latest todo-vN.md.
