@@ -8,6 +8,7 @@ const DISPLAY_COLORS: Record<Display, string> = {
   "your-turn": "#f5a623",
   idle: "#7ed321",
   disconnected: "#d0021b",
+  queued: "#9b59b6",
 };
 
 const DISPLAY_LABELS: Record<Display, string> = {
@@ -16,6 +17,7 @@ const DISPLAY_LABELS: Record<Display, string> = {
   "your-turn": "사용자 차례",
   idle: "쉬는 중",
   disconnected: "끊김",
+  queued: "순서 대기",
 };
 
 // pendingAction → T12에 적힌 문구. UI는 해소 여부를 직접 판단하지 않는다.
@@ -46,6 +48,7 @@ function pendingActionText(pa: PendingAction): string {
 function pendingActionSub(pa: PendingAction): string | null {
   if (pa.kind !== "done") return null;
   if (pa.commit === "planned") return `CODER 창에서 커밋 계획(todo-v${pa.t}-commit.md)을 확인하고 허가하세요`;
+  if (pa.commit === "done") return "커밋 완료로 표시됨";
   return null;
 }
 
@@ -110,6 +113,13 @@ function TaskCard({ state, planDisplay, verifyDisplay, coderDisplay }: Props) {
         <span className="label">CODER</span>
         <Badge display={coderDisplay} />
       </div>
+      {state?.queue && (
+        <div className="pending-hint">
+          {state.queue.reason === "local"
+            ? "로컬 모델 사용 중 — 순서를 기다립니다"
+            : "같은 프로젝트의 다른 작업이 커밋할 때까지 기다립니다"}
+        </div>
+      )}
       {pa && (
         <div className="pending-action">
           <span className="pending-text">{pendingActionText(pa)}</span>

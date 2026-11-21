@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   clearTimeline,
   closeTask,
+  commitDone,
   fetchState,
   relaunch,
   saveWindowSize,
@@ -199,6 +200,11 @@ function App() {
     if (!window.confirm("타임라인을 비울까요? 화면에서만 지워지고 기록 파일(state/tasks/<id>/events.jsonl)은 그대로 남습니다.")) return;
     void run(() => clearTimeline(taskId));
   };
+  const handleCommitDone = () => {
+    if (!taskId) return;
+    if (!window.confirm("커밋을 마쳤나요? 같은 프로젝트에서 기다리는 CODER가 구현을 시작합니다.")) return;
+    void run(() => commitDone(taskId));
+  };
 
   const isTaskScreen = taskId !== null;
 
@@ -235,6 +241,17 @@ function App() {
                 작업 종료
               </button>
             </div>
+            {state?.task && state.projectInfo[state.task.project]?.git != null && (
+              <div className="control-row">
+                <button
+                  type="button"
+                  onClick={handleCommitDone}
+                  disabled={busy || state.snapshot?.status !== "DONE" || state.task.commitDone}
+                >
+                  커밋 완료
+                </button>
+              </div>
+            )}
           </div>
 
           <Timeline events={state?.events ?? []} onClear={handleClearTimeline} disabled={busy} />

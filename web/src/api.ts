@@ -9,7 +9,7 @@ export type SessionState =
   | "detached";
 
 // 표시 상태 (plan-v3 §3 B) — 내부 세션 상태를 사용자가 보는 눈높이로 압축.
-export type Display = "working" | "waiting" | "your-turn" | "idle" | "disconnected";
+export type Display = "working" | "waiting" | "your-turn" | "idle" | "disconnected" | "queued";
 
 export type Status =
   | "DRAFT"
@@ -42,6 +42,7 @@ export interface Task {
   folder: string | null;
   startedAt: number;
   assigned: { planner: string | null; verifier: string | null; coder: string | null };
+  commitDone: boolean;
 }
 
 export type PendingAction =
@@ -51,7 +52,7 @@ export type PendingAction =
   | { kind: "pass"; n: number; text: string }
   | { kind: "todo-gate"; n: number }
   | { kind: "coder" }
-  | { kind: "done"; t: number; commit: "none" | "planned" }
+  | { kind: "done"; t: number; commit: "none" | "planned" | "done" }
   | { kind: "commit"; t: number }
   | { kind: "describe" };
 
@@ -79,6 +80,7 @@ export interface State {
   projects: string[];
   projectInfo: Record<string, ProjectInfo>;
   pendingAction: PendingAction | null;
+  queue: { role: "planner" | "verifier" | "coder"; reason: "local" | "coding" } | null;
   events: AismEvent[];
 }
 
@@ -157,6 +159,10 @@ export function relaunch(taskId: string, role: Role, mode: "new" | "resume" = "n
 
 export function closeTask(taskId: string): Promise<void> {
   return postJson("/api/tasks/close", { task: taskId });
+}
+
+export function commitDone(taskId: string): Promise<void> {
+  return postJson("/api/tasks/commit-done", { task: taskId });
 }
 
 export function clearTimeline(taskId: string): Promise<void> {
