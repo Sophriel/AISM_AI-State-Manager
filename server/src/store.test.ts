@@ -31,6 +31,8 @@ describe("Store", () => {
     };
     a.state.tasks["t-1"].record = { notified: ["decision-v3"], consecutiveBlocks: { "verifier-1": 2 }, instructed: [] };
     a.state.tasks["t-1"].undelivered = [{ role: "verifier", text: "지시 문장" }];
+    a.state.codingLocks["EWE"] = { task: "t-1", since: 1000 };
+    a.state.codingQueue = [{ task: "t-2", sessionKey: "coder-2", text: "구현 지시", since: 2000 }];
     a.save();
 
     const b = new Store(dir);
@@ -39,7 +41,7 @@ describe("Store", () => {
 
   it("state.json이 없으면 빈 상태", () => {
     const s = new Store(dir);
-    expect(s.state).toEqual({ tasks: {}, sessions: {} });
+    expect(s.state).toEqual({ tasks: {}, sessions: {}, codingLocks: {}, codingQueue: [] });
   });
 
   it("형식이 다른 state.json(최상위 record 키) → 빈 상태", () => {
@@ -49,7 +51,7 @@ describe("Store", () => {
       JSON.stringify({ tasks: {}, sessions: {}, record: { notified: ["pass-v1"] } }),
       "utf8",
     );
-    expect(s.load()).toEqual({ tasks: {}, sessions: {} });
+    expect(s.load()).toEqual({ tasks: {}, sessions: {}, codingLocks: {}, codingQueue: [] });
   });
 
   it("형식이 다른 state.json(옛 activeTask 형식) → 빈 상태", () => {
@@ -69,7 +71,7 @@ describe("Store", () => {
       }),
       "utf8",
     );
-    expect(s.load()).toEqual({ tasks: {}, sessions: {} });
+    expect(s.load()).toEqual({ tasks: {}, sessions: {}, codingLocks: {}, codingQueue: [] });
   });
 
   it("형식이 다른 state.json(task.assigned에 plan 키) → 빈 상태", () => {
@@ -92,7 +94,7 @@ describe("Store", () => {
       }),
       "utf8",
     );
-    expect(s.load()).toEqual({ tasks: {}, sessions: {} });
+    expect(s.load()).toEqual({ tasks: {}, sessions: {}, codingLocks: {}, codingQueue: [] });
   });
 
   it("형식이 다른 state.json(assigned에 coder 없음) → 빈 상태", () => {
@@ -115,7 +117,7 @@ describe("Store", () => {
       }),
       "utf8",
     );
-    expect(s.load()).toEqual({ tasks: {}, sessions: {} });
+    expect(s.load()).toEqual({ tasks: {}, sessions: {}, codingLocks: {}, codingQueue: [] });
   });
 
   it("형식이 다른 state.json(세션 role: plan) → 빈 상태", () => {
@@ -139,13 +141,13 @@ describe("Store", () => {
       }),
       "utf8",
     );
-    expect(s.load()).toEqual({ tasks: {}, sessions: {} });
+    expect(s.load()).toEqual({ tasks: {}, sessions: {}, codingLocks: {}, codingQueue: [] });
   });
 
   it("형식이 다른 state.json(tasks 키 누락) → 빈 상태", () => {
     const s = new Store(dir);
     fs.writeFileSync(path.join(dir, "state.json"), JSON.stringify({ sessions: {} }), "utf8");
-    expect(s.load()).toEqual({ tasks: {}, sessions: {} });
+    expect(s.load()).toEqual({ tasks: {}, sessions: {}, codingLocks: {}, codingQueue: [] });
   });
 
   it("형식이 다른 state.json(tasks[k].id !== k) → 빈 상태", () => {
@@ -168,7 +170,33 @@ describe("Store", () => {
       }),
       "utf8",
     );
-    expect(s.load()).toEqual({ tasks: {}, sessions: {} });
+    expect(s.load()).toEqual({ tasks: {}, sessions: {}, codingLocks: {}, codingQueue: [] });
+  });
+
+  it("형식이 다른 state.json(1단계 형식 — 최상위 키 2개·작업 키 7개) → 빈 상태·경고", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    fs.writeFileSync(
+      path.join(dir, "state.json"),
+      JSON.stringify({
+        tasks: {
+          "t-1": {
+            id: "t-1",
+            project: "EWE",
+            folder: null,
+            startedAt: 1000,
+            assigned: { planner: null, verifier: null, coder: null },
+            record: { notified: [], consecutiveBlocks: {}, instructed: [] },
+            undelivered: [],
+          },
+        },
+        sessions: {},
+      }),
+      "utf8",
+    );
+    const s = new Store(dir);
+    expect(s.state).toEqual({ tasks: {}, sessions: {}, codingLocks: {}, codingQueue: [] });
+    expect(warn).toHaveBeenCalledTimes(1);
+    warn.mockRestore();
   });
 
   it("형식 불일치 경고는 1회만 (생성자 + load 연속)", () => {

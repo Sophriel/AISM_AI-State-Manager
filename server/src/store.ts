@@ -13,6 +13,7 @@ export interface Task {
   assigned: { planner: string | null; verifier: string | null; coder: string | null };
   record: TaskRecord;
   undelivered: Undelivered[];
+  commitDone: boolean;
 }
 
 export interface SessionInfo {
@@ -31,9 +32,23 @@ export interface Undelivered {
   text: string;
 }
 
+export interface CodingLock {
+  task: string;
+  since: number;
+}
+
+export interface CodingWait {
+  task: string;
+  sessionKey: string;
+  text: string;
+  since: number;
+}
+
 export interface State {
   tasks: Record<string, Task>;
   sessions: Record<string, SessionInfo>;
+  codingLocks: Record<string, CodingLock>;
+  codingQueue: CodingWait[];
 }
 
 export type EventType = "stop" | "reply" | "launch" | "bind" | "notify" | "detach" | "close-task" | "hold" | "clear-timeline";
@@ -43,6 +58,8 @@ export const EVENT_TEXT_MAX = 2000; // 이벤트에 저장하는 응답·지시 
 const emptyState = (): State => ({
   tasks: {},
   sessions: {},
+  codingLocks: {},
+  codingQueue: [],
 });
 
 // 작업 ID — t-<YYYYMMDD>-<HHmmss>-<hex> (launcher makeSessionKey와 같은 시각 형식, 로컬 시간).
@@ -61,6 +78,7 @@ export function newTask(id: string, project: string, startedAt: number): Task {
     assigned: { planner: null, verifier: null, coder: null },
     record: { notified: [], consecutiveBlocks: {}, instructed: [] },
     undelivered: [],
+    commitDone: false,
   };
 }
 
@@ -73,19 +91,27 @@ const isNumMap = (v: unknown): v is Record<string, number> =>
   isObj(v) && Object.values(v).every((x) => typeof x === "number");
 
 // "현재 형식" 검사 — 키가 정확히 일치하고 타입이 맞아야 true.
-// 최상위 키는 정확히 tasks·sessions, 각 작업 키 7개(id 포함)·tasks[k].id === k, 각 세션에 task(string|null).
-// 옛 형식(activeTask)은 이 검사를 통과하지 못해 기존 규칙대로 버려지고 경고한다.
+// 최상위 키는 정확히 tasks·sessions·codingLocks·codingQueue, 각 작업 키 8개(id 포함)·tasks[k].id === k, 각 세션에 task(string|null).
+// codingLocks 값은 키 정확히 task(string)·since(number), codingQueue 항목은 키 정확히 task·sessionKey·text(string)·since(number).
+// 옛 형식(activeTask, 1단계 형식)은 이 검사를 통과하지 못해 기존 규칙대로 버려지고 경고한다.
 export function isCurrentState(x: unknown): x is State {
   if (!isObj(x)) return false;
   const topKeys = Object.keys(x);
-  if (topKeys.length !== 2 || !topKeys.includes("tasks") || !topKeys.includes("sessions")) return false;
+  if (
+    topKeys.length !== 4 ||
+    !topKeys.includes("tasks") ||
+    !topKeys.includes("sessions") ||
+    !topKeys.includes("codingLocks") ||
+    !topKeys.includes("codingQueue")
+  )
+    return false;
 
   const tasks = x.tasks;
   if (!isObj(tasks)) return false;
   for (const [k, t] of Object.entries(tasks)) {
     if (!isObj(t)) return false;
     const tKeys = Object.keys(t);
-    const expectedT = ["id", "project", "folder", "startedAt", "assigned", "record", "undelivered"];
+    const expectedT = ["id", "project", "folder", "startedAt", "assigned", "record", "undelivered", "commitDone"];
     if (tKeys.length !== expectedT.length || !expectedT.every((key) => tKeys.includes(key))) return false;
     if (t.id !== k) return false;
     if (typeof t.project !== "string") return false;
@@ -125,6 +151,7 @@ export function isCurrentState(x: unknown): x is State {
       if (!["planner", "verifier", "coder"].includes(item.role as string)) return false;
       if (typeof item.text !== "string") return false;
     }
+    if (typeof t.commitDone !== "boolean") return false;
   }
 
   const s = x.sessions;
@@ -151,6 +178,32 @@ export function isCurrentState(x: unknown): x is State {
     if (info.activeSessionId !== null && typeof info.activeSessionId !== "string") return false;
     if (typeof info.switchedOnce !== "boolean") return false;
     if (info.task !== null && typeof info.task !== "string") return false;
+  }
+
+  const cl = x.codingLocks;
+  if (!isObj(cl)) return false;
+  for (const v of Object.values(cl)) {
+    if (!isObj(v)) return false;
+    const clKeys = Object.keys(v);
+    if (clKeys.length !== 2 || !clKeys.includes("task") || !clKeys.includes("since")) return false;
+    if (typeof v.task !== "string" || typeof v.since !== "number") return false;
+  }
+
+  const cq = x.codingQueue;
+  if (!Array.isArray(cq)) return false;
+  for (const item of cq) {
+    if (!isObj(item)) return false;
+    const cqKeys = Object.keys(item);
+    if (
+      cqKeys.length !== 4 ||
+      !cqKeys.includes("task") ||
+      !cqKeys.includes("sessionKey") ||
+      !cqKeys.includes("text") ||
+      !cqKeys.includes("since")
+    )
+      return false;
+    if (typeof item.task !== "string" || typeof item.sessionKey !== "string" || typeof item.text !== "string" || typeof item.since !== "number")
+      return false;
   }
 
   return true;

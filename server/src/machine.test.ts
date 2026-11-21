@@ -562,6 +562,7 @@ describe("CODER 행 c1~c9", () => {
     );
     const b = blockTo(actions, "coder-1");
     expect(b?.reply).toEqual({ action: "block", reason: instructionTodoVerdictLine(1) });
+    expect(b?.lock).toBeUndefined(); // c5 — lock 없음 (c6만 lock: "coding").
   });
 
   it("c6. PASS 첫 평가 → block(instructionImplement(1)) + record.instructed에 impl-v1", () => {
@@ -574,6 +575,7 @@ describe("CODER 행 c1~c9", () => {
     );
     const b = blockTo(actions, "coder-1");
     expect(b?.reply).toEqual({ action: "block", reason: instructionImplement(1) });
+    expect(b?.lock).toBe("coding"); // c6 — 프로젝트 코딩 잠금 획득·대기 (S-4).
     const rec = records(actions)[0];
     expect(rec.instructed).toContain("impl-v1");
   });

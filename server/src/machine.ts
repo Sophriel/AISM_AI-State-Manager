@@ -30,7 +30,7 @@ export interface MachineInput {
 export type Reply = { action: "allow" } | { action: "block"; reason: string };
 
 export type Action =
-  | { kind: "reply"; sessionKey: string; reply: Reply }
+  | { kind: "reply"; sessionKey: string; reply: Reply; lock?: "coding" }
   | { kind: "hold"; sessionKey: string }
   | { kind: "launch"; role: Role; instruction?: string }
   | { kind: "notify"; key: string; level: "info" | "warn"; message: string; copyText?: string }
@@ -109,7 +109,8 @@ export function evaluate(input: MachineInput): Action[] {
   };
 
   // true = 실제로 block을 냈다, false = 상한 초과로 allow를 냈다.
-  const block = (sessionKey: string, reason: string): boolean => {
+  // lock = "coding"이면 reply Action에 lock을 붙인다 (c6 구현 지시 — 프로젝트 코딩 잠금, S-4).
+  const block = (sessionKey: string, reason: string, lock?: "coding"): boolean => {
     const next = (counts[sessionKey] ?? 0) + 1;
     if (next > config.maxConsecutiveBlocks) {
       // 연속 상한 초과 → 대신 allow + warn.
@@ -121,7 +122,11 @@ export function evaluate(input: MachineInput): Action[] {
       }
       return false;
     }
-    actions.push({ kind: "reply", sessionKey, reply: { action: "block", reason } });
+    actions.push(
+      lock
+        ? { kind: "reply", sessionKey, reply: { action: "block", reason }, lock }
+        : { kind: "reply", sessionKey, reply: { action: "block", reason } },
+    );
     counts[sessionKey] = next;
     dirty = true;
     return true;
@@ -326,11 +331,11 @@ export function evaluate(input: MachineInput): Action[] {
         return finish();
       }
       if (todo.verdict === "PASS") {
-        // c6
+        // c6 — 구현 지시. lock: "coding"으로 프로젝트 코딩 잠금을 획득·대기한다 (S-4).
         const key = `impl-v${T}`;
         if (instructed.has(key)) {
           allow(sender.sessionKey);
-        } else if (block(sender.sessionKey, instructionImplement(T))) {
+        } else if (block(sender.sessionKey, instructionImplement(T), "coding")) {
           instructed.add(key);
           dirty = true;
         }
