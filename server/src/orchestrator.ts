@@ -27,6 +27,7 @@ import { shouldToast, showToast } from "./toast.js";
 export type PendingAction =
   | { kind: "deliver"; role: Role; text: string }
   | { kind: "decision" }
+  | { kind: "draft" }
   | { kind: "gate"; n: number }
   | { kind: "pass"; n: number; text: string }
   | { kind: "todo-gate"; n: number }
@@ -669,17 +670,21 @@ export class Orchestrator {
   // pendingAction — 위에서부터 처음 맞는 하나만.
   pendingAction(task: Task | null): PendingAction | null {
     if (!task) return null;
-    if (task.undelivered.length > 0) {
+    const deliverOf = (): PendingAction | null => {
+      if (task.undelivered.length === 0) return null;
       const last = task.undelivered[task.undelivered.length - 1];
       return { kind: "deliver", role: last.role, text: last.text };
-    }
-    if (task.folder === null) return { kind: "describe" };
-
+    };
+    if (task.folder === null) return deliverOf() ?? { kind: "describe" };
     const projectCfg = this.config.projects[task.project];
-    if (!projectCfg) return null;
-    const snapshot = this.taskSnapshot(task.project, task.folder);
+    const snapshot = projectCfg ? this.taskSnapshot(task.project, task.folder) : null;
+    // 사용자 차례 우선 (plan-v5 P7·P8) — 남은 지시보다 먼저.
+    if (snapshot?.status === "NEEDS_DECISION") return { kind: "decision" };
+    if (snapshot?.status === "DRAFT") return { kind: "draft" };
+    const pending = deliverOf();
+    if (pending) return pending;
+    if (!projectCfg || !snapshot) return null;
     const N = snapshot.latestN;
-    if (snapshot.status === "NEEDS_DECISION") return { kind: "decision" };
     if (snapshot.verdict === "REVISE" && N !== null && N >= this.config.confirmFromVersion) {
       const nextPlanExists = fs.existsSync(
         path.join(projectCfg.root, projectCfg.plansDir, task.folder, `plan-v${N + 1}.md`),

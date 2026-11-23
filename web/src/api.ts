@@ -48,6 +48,7 @@ export interface Task {
 export type PendingAction =
   | { kind: "deliver"; role: Role; text: string }
   | { kind: "decision" }
+  | { kind: "draft" }
   | { kind: "gate"; n: number }
   | { kind: "pass"; n: number; text: string }
   | { kind: "todo-gate"; n: number }

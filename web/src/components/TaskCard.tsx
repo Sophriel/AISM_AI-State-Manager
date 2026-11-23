@@ -28,6 +28,8 @@ function pendingActionText(pa: PendingAction): string {
       return pa.text;
     case "decision":
       return "PLANNER 창에서 결정 사항을 논의하세요";
+    case "draft":
+      return "PLANNER 창에서 플랜 항목을 이어서 정리하세요";
     case "gate":
       return `계속 개정하려면 PLANNER 창에서 지시하세요 (v${pa.n})`;
     case "pass":

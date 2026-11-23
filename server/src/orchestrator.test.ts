@@ -2808,6 +2808,85 @@ describe("P6 — idle 역할 resume-launch (ADR 0026)", () => {
   });
 });
 
+// P7·P8 — PLANNER 배지 (plan-v5). NEEDS_DECISION→decision·DRAFT→draft가 undelivered보다 우선.
+describe("P7·P8 — PLANNER 배지 (plan-v5)", () => {
+  const folder = "261111-alpha";
+
+  it("(a) undelivered(verifier) + NEEDS_DECISION → decision 우선, PLANNER idle→your-turn·VERIFIER idle→idle", () => {
+    const env = setup();
+    const { orchestrator, store, sessions, taskDir } = env;
+    const task = seedTask(store, {
+      folder,
+      assigned: { planner: "planner-1", verifier: "verifier-1", coder: null },
+      undelivered: [{ role: "verifier", text: "지시 문장" }],
+    });
+    sessions.register("planner-1", "idle");
+    sessions.register("verifier-1", "idle");
+    fs.mkdirSync(taskDir, { recursive: true });
+    fs.writeFileSync(path.join(taskDir, "plan-v1.md"), "Status: NEEDS_DECISION\n");
+    expect(orchestrator.pendingAction(task)).toEqual({ kind: "decision" }); // P7 — undelivered보다 우선
+    const st = orchestrator.getState(task.id);
+    expect(st.assignedDisplay.planner).toBe("your-turn"); // decision → PLANNER 대상, idle → your-turn
+    expect(st.assignedDisplay.verifier).toBe("idle"); // decision은 PLANNER 대상 — VERIFIER는 idle
+    env.cleanup();
+  });
+
+  it("(b) DRAFT + PLANNER idle → draft, PLANNER your-turn", () => {
+    const env = setup();
+    const { orchestrator, store, sessions, taskDir } = env;
+    const task = seedTask(store, {
+      folder,
+      assigned: { planner: "planner-1", verifier: null, coder: null },
+    });
+    sessions.register("planner-1", "idle");
+    fs.mkdirSync(taskDir, { recursive: true });
+    fs.writeFileSync(path.join(taskDir, "plan-v1.md"), "Status: DRAFT\n");
+    expect(orchestrator.pendingAction(task)).toEqual({ kind: "draft" }); // P8
+    expect(orchestrator.getState(task.id).assignedDisplay.planner).toBe("your-turn"); // draft → PLANNER 대상
+    env.cleanup();
+  });
+
+  it("(c) DRAFT + undelivered(verifier) → draft 우선", () => {
+    const env = setup();
+    const { orchestrator, store, taskDir } = env;
+    const task = seedTask(store, {
+      folder,
+      assigned: { planner: "planner-1", verifier: "verifier-1", coder: null },
+      undelivered: [{ role: "verifier", text: "지시 문장" }],
+    });
+    fs.mkdirSync(taskDir, { recursive: true });
+    fs.writeFileSync(path.join(taskDir, "plan-v1.md"), "Status: DRAFT\n");
+    expect(orchestrator.pendingAction(task)).toEqual({ kind: "draft" }); // P8 — undelivered보다 우선
+    env.cleanup();
+  });
+
+  it("(d) folder null + undelivered → deliver (기존 동작)", () => {
+    const env = setup();
+    const { orchestrator, store } = env;
+    const task = seedTask(store, {
+      folder: null,
+      assigned: { planner: "planner-1", verifier: "verifier-1", coder: null },
+      undelivered: [{ role: "verifier", text: "지시 문장" }],
+    });
+    expect(orchestrator.pendingAction(task)).toEqual({ kind: "deliver", role: "verifier", text: "지시 문장" });
+    env.cleanup();
+  });
+
+  it("(e) IN_REVIEW + undelivered → deliver (기존 동작)", () => {
+    const env = setup();
+    const { orchestrator, store, taskDir } = env;
+    const task = seedTask(store, {
+      folder,
+      assigned: { planner: "planner-1", verifier: "verifier-1", coder: null },
+      undelivered: [{ role: "verifier", text: "지시 문장" }],
+    });
+    fs.mkdirSync(taskDir, { recursive: true });
+    fs.writeFileSync(path.join(taskDir, "plan-v1.md"), "Status: IN_REVIEW\n");
+    expect(orchestrator.pendingAction(task)).toEqual({ kind: "deliver", role: "verifier", text: "지시 문장" });
+    env.cleanup();
+  });
+});
+
 describe("commitDoneT — todo 번호 단위 커밋 완료 (plan-v5 P5)", () => {
   it("todo-v1 커밋 완료 후 todo-v2 등장 → done.commit planned, 재 commitDone → 200·commitDoneT 2·잠금 해제", () => {
     const env = setup({ gitInfo: () => ({ branch: "main" }) });
