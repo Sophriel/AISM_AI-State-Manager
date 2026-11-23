@@ -241,7 +241,7 @@ function App() {
                   className="endpoint-select"
                   aria-label={`${ROLE_LABEL[r]} 모델 선택`}
                   title={
-                    busy || !canSelectEndpoint(state, r)
+                    !canSelectEndpoint(state, r)
                       ? `${ROLE_LABEL[r]} 모델 선택 — 세션 창이 열려 있어 바꿀 수 없습니다`
                       : `${ROLE_LABEL[r]} 모델 선택`
                   }

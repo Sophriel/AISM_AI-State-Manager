@@ -50,12 +50,14 @@ function describeEvent(e: AismEvent): { line: string; sep: string; body: string 
       return { line: `${t}  ${roleOf(e)} 대기`, sep: "", body: null };
     case "launch": {
       const suffix = e.resume ? " (이어서 띄움)" : e.relaunch ? " (다시 띄움)" : "";
+      const ep = typeof e.endpoint === "string" ? ` (${e.endpoint})` : "";
       return {
-        line: `${t}  Launch  ${roleOf(e)}${suffix}`,
+        line: `${t}  Launch  ${roleOf(e)}${ep}${suffix}`,
         sep: " — 지시: ",
         body: e.instruction ? str(e.instruction) : null,
       };
     }
+    // 옛 이벤트 표시용 — 새로 기록되지 않음 (plan-v5)
     case "endpoint":
       return { line: `${t}  ${roleOf(e)} 모델: ${str(e.from)} → ${str(e.endpoint)}`, sep: "", body: null };
     case "bind":
