@@ -74,6 +74,8 @@ export interface State {
   unattached?: Array<{ id: string; project: string; folder: string | null; startedAt: number }>;
   assignedState: { planner: SessionState | null; verifier: SessionState | null; coder: SessionState | null };
   assignedDisplay: { planner: Display | null; verifier: Display | null; coder: Display | null };
+  endpointNames: string[];
+  endpoints: Record<Role, string> | null;
   snapshot: Snapshot | null;
   todo: TodoSnapshot | null;
   sessions: Record<string, SessionView>;
@@ -173,6 +175,11 @@ export async function listFolders(project: string): Promise<string[]> {
 
 export function relaunch(taskId: string, role: Role, mode: "new" | "resume" = "new"): Promise<void> {
   return postJson("/api/tasks/relaunch", { task: taskId, role, mode });
+}
+
+// 역할별 엔드포인트(모델) 선택 — 작업 단위. 세션 창이 열려 있으면 서버 409.
+export function setEndpoint(taskId: string, role: Role, endpoint: string): Promise<void> {
+  return postJson("/api/tasks/endpoint", { task: taskId, role, endpoint });
 }
 
 export function closeTask(taskId: string): Promise<void> {

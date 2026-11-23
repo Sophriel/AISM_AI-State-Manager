@@ -7,6 +7,7 @@ import {
   fetchState,
   relaunch,
   saveWindowSize,
+  setEndpoint,
   type NotifyPayload,
   type Role,
   type State,
@@ -37,6 +38,14 @@ function canResume(state: State | null, role: Role): boolean {
   if (s !== "detached" && s !== "idle" && s !== "working") return false;
   return state.sessions[key]?.resumable === true;
 }
+// 모델 선택 — 세션 창이 열려 있으면 안 됨 (서버 D3 조건과 같음).
+function canSelectEndpoint(state: State | null, role: Role): boolean {
+  const task = state?.task;
+  if (!task) return false;
+  const s = state.assignedState[role];
+  return s === null || s === "detached";
+}
+
 const ROLES = ["planner", "verifier", "coder"] as const;
 const ROLE_LABEL: Record<Role, string> = { planner: "PLANNER", verifier: "VERIFIER", coder: "CODER" };
 
@@ -228,6 +237,27 @@ function App() {
           <div className="controls">
             {ROLES.map((r) => (
               <div className="control-row" key={r}>
+                <select
+                  className="endpoint-select"
+                  aria-label={`${ROLE_LABEL[r]} 모델 선택`}
+                  title={
+                    busy || !canSelectEndpoint(state, r)
+                      ? `${ROLE_LABEL[r]} 모델 선택 — 세션 창이 열려 있어 바꿀 수 없습니다`
+                      : `${ROLE_LABEL[r]} 모델 선택`
+                  }
+                  value={state?.endpoints?.[r] ?? ""}
+                  disabled={busy || !canSelectEndpoint(state, r)}
+                  onChange={(e) => {
+                    if (!taskId) return;
+                    void run(() => setEndpoint(taskId, r, e.target.value));
+                  }}
+                >
+                  {(state?.endpointNames ?? []).map((name) => (
+                    <option key={name} value={name}>
+                      {name}
+                    </option>
+                  ))}
+                </select>
                 <button type="button" onClick={() => handleRelaunch(r, "new")} disabled={busy || !canRelaunch(state, r)}>
                   {ROLE_LABEL[r]} 다시 띄우기
                 </button>

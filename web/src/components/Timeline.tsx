@@ -56,6 +56,8 @@ function describeEvent(e: AismEvent): { line: string; sep: string; body: string 
         body: e.instruction ? str(e.instruction) : null,
       };
     }
+    case "endpoint":
+      return { line: `${t}  ${roleOf(e)} 모델: ${str(e.from)} → ${str(e.endpoint)}`, sep: "", body: null };
     case "bind":
       return { line: `${t}  Bind  ${str(e.folder)}`, sep: "", body: null };
     case "notify":
