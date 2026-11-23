@@ -23,7 +23,7 @@
 ## 결과
 
 - 서버: `POST /api/tasks/endpoint`, `Orchestrator.setEndpoint`, `effectiveEndpoint(task, role)` — 모든 launch 경로(자동 launch·relaunch·newTask)와 로컬 대기열·코딩 잠금 대상 판정이 이것을 기준으로 한다. `getState`에 `endpointNames`·`endpoints` 추가.
-- 웹: 역할 행 맨 앞의 모델 선택 드롭다운(창이 열려 있으면 비활성), 타임라인 `endpoint` 이벤트 한 줄(`PLANNER 모델: cloud → local`).
+- 웹: 역할 행 맨 앞의 모델 선택 드롭다운(창이 열려 있으면 비활성), 타임라인 launch 줄에 실제로 띄운 엔드포인트 표시(`Launch  CODER (local)`). 모델 변경 자체는 타임라인에 기록하지 않는다(plan-v5, N1).
 - 엣지: 긴 클라우드 대화를 로컬로 이어서 띄우면 로컬 컨텍스트를 넘을 수 있어 다시 띄우기 권장(README).
 
 ## 검토한 대안
