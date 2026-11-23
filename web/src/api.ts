@@ -132,12 +132,12 @@ async function postJson(path: string, body: unknown): Promise<void> {
   }
 }
 
-// 새 작업 — 응답 taskId 반환 (T8).
-export async function newTask(project: string): Promise<string> {
+// 새 작업 — 응답 taskId 반환 (T8). folder 지정 시 기존 plan 폴더로 시작 (N2).
+export async function newTask(project: string, folder?: string): Promise<string> {
   const res = await fetch("/api/tasks/new", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ project }),
+    body: JSON.stringify(folder !== undefined ? { project, folder } : { project }),
   });
   if (!res.ok) {
     let detail = "";
@@ -151,6 +151,24 @@ export async function newTask(project: string): Promise<string> {
   }
   const j = (await res.json()) as { taskId: string };
   return j.taskId;
+}
+
+// 기존 plan 폴더 후보 — plan-v1.md가 있고 미바인딩인 폴더 (N2).
+export async function listFolders(project: string): Promise<string[]> {
+  const url = `/api/projects/${encodeURIComponent(project)}/folders`;
+  const res = await fetch(url);
+  if (!res.ok) {
+    let detail = "";
+    try {
+      const j = (await res.json()) as { error?: string };
+      if (j.error) detail = ` (${j.error})`;
+    } catch {
+      /* ignore */
+    }
+    throw new Error(`GET ${url} → ${res.status}${detail}`);
+  }
+  const j = (await res.json()) as { folders: string[] };
+  return j.folders;
 }
 
 export function relaunch(taskId: string, role: Role, mode: "new" | "resume" = "new"): Promise<void> {

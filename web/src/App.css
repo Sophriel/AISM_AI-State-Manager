@@ -147,6 +147,11 @@
   cursor: not-allowed;
 }
 
+.folder-empty {
+  color: var(--text-h);
+  font-style: italic;
+}
+
 /* 타임라인 */
 .timeline-header {
   display: flex;
