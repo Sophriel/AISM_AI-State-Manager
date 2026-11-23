@@ -69,6 +69,15 @@ interface Props {
   coderDisplay: Display | null;
 }
 
+// Commit 칸 — 서버 orchestrator.ts:691과 같은 판정: git 아님·계획 없음 → "—", commitDone → "완료", 그 외 "계획".
+function commitLabel(state: State | null): string {
+  const task = state?.task;
+  if (!task || !state?.todo) return "—";
+  const isGit = state.projectInfo?.[task.project]?.git != null;
+  if (!isGit || !state.todo.commitPlanExists) return "—";
+  return task.commitDone ? "완료" : "계획";
+}
+
 function TaskCard({ state, planDisplay, verifyDisplay, coderDisplay }: Props) {
   const task = state?.task ?? null;
   const snap = state?.snapshot ?? null;
@@ -105,7 +114,7 @@ function TaskCard({ state, planDisplay, verifyDisplay, coderDisplay }: Props) {
           {state?.todo?.verdict ?? "—"}
         </span>
         <span className="label">Commit</span>
-        <span className="value">{!state?.todo || !state.todo.commitPlanExists ? "—" : "계획"}</span>
+        <span className="value">{commitLabel(state)}</span>
       </div>
       <div className="task-row sessions">
         <span className="label">PLANNER</span>
