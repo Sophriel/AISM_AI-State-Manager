@@ -28,7 +28,7 @@ export function showToast(title: string, message: string): void {
     const child = spawn(
       "powershell.exe",
       ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden", "-File", script, "-B64", b64],
-      { stdio: "ignore" },
+      { stdio: "ignore", windowsHide: true },
     );
     child.on("error", warnOnce);
     child.unref();
