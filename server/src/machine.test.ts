@@ -115,7 +115,7 @@ describe("행 3 — IN_REVIEW, verify 없음 (peer 4가지)", () => {
     expect(actions).toEqual([{ kind: "hold", sessionKey: "planner-1" }]);
   });
 
-  it("peer idle → hold + undeliverable (notify 없음)", () => {
+  it("peer idle → hold + resume-launch (notify 없음)", () => {
     const actions = evaluate(
       input({
         snapshot: { latestN: 3, status: "IN_REVIEW", verifyExists: false, verdict: null },
@@ -123,8 +123,8 @@ describe("행 3 — IN_REVIEW, verify 없음 (peer 4가지)", () => {
       }),
     );
     expect(actions.some((a) => a.kind === "hold" && a.sessionKey === "planner-1")).toBe(true);
-    const u = actions.find((a) => a.kind === "undeliverable");
-    expect(u).toEqual({ kind: "undeliverable", role: "verifier", text: instructionVerifyPlan(3) });
+    const r = actions.find((a) => a.kind === "resume-launch");
+    expect(r).toEqual({ kind: "resume-launch", role: "verifier", instruction: instructionVerifyPlan(3) });
     expect(notifies(actions)).toHaveLength(0);
   });
 
@@ -248,6 +248,19 @@ describe("행 5 — APPROVED / TODO_READY / 그 이후 (W5)", () => {
     expect(b?.reply).toEqual({ action: "block", reason: instructionReviewTodo(1) });
   });
 
+  it("5t(b''). 같은 조건 peers.coder idle → resume-launch(coder, instructionReviewTodo(1))", () => {
+    const actions = evaluate(
+      input({
+        snapshot: { latestN: 3, status: "TODO_READY", verifyExists: true, verdict: "PASS" },
+        todo: { latestN: 1, verifyExists: false, verdict: null, checklistExists: false, commitPlanExists: false },
+        peers: { coder: { sessionKey: "coder-1", state: "idle" } },
+      }),
+    );
+    expect(actions.some((a) => a.kind === "hold" && a.sessionKey === "planner-1")).toBe(true);
+    const r = actions.find((a) => a.kind === "resume-launch");
+    expect(r).toEqual({ kind: "resume-launch", role: "coder", instruction: instructionReviewTodo(1) });
+  });
+
   it("5t(c). TODO_READY, verify PASS → allow, 알림 없음", () => {
     const actions = evaluate(
       input({
@@ -357,7 +370,7 @@ describe("행 8 — VERIFIER PASS (W5)", () => {
         peers: { planner: { sessionKey: "planner-1", state: "parked" } },
       }),
     );
-    expect(allowTo(actions, "verifier-1")).toBe(true);
+    expect(actions.some((a) => a.kind === "hold" && a.sessionKey === "verifier-1")).toBe(true);
     const b = blockTo(actions, "planner-1");
     expect(b?.reply).toEqual({ action: "block", reason: instructionApproveAndTodo(3) });
     expect(notifies(actions).map((x) => x.key)).toEqual(["pass-v3"]);
@@ -373,7 +386,7 @@ describe("행 8 — VERIFIER PASS (W5)", () => {
         peers: { planner: { sessionKey: "planner-1", state: "working" } },
       }),
     );
-    expect(allowTo(actions, "verifier-1")).toBe(true);
+    expect(actions.some((a) => a.kind === "hold" && a.sessionKey === "verifier-1")).toBe(true);
     expect(replies(actions).some((r) => r.sessionKey === "planner-1")).toBe(false);
     const rec = records(actions)[0];
     expect(rec.instructed ?? []).not.toContain("todo-v3");
@@ -387,7 +400,7 @@ describe("행 8 — VERIFIER PASS (W5)", () => {
         peers: { planner: { sessionKey: "planner-1", state: "idle" } },
       }),
     );
-    expect(allowTo(actions, "verifier-1")).toBe(true);
+    expect(actions.some((a) => a.kind === "hold" && a.sessionKey === "verifier-1")).toBe(true);
     expect(actions).toContainEqual({ kind: "undeliverable", role: "planner", text: instructionApproveAndTodo(3) });
     const rec = records(actions)[0];
     expect(rec.instructed ?? []).not.toContain("todo-v3");
@@ -402,7 +415,7 @@ describe("행 8 — VERIFIER PASS (W5)", () => {
         record: { notified: [], consecutiveBlocks: {}, instructed: ["todo-v3"] },
       }),
     );
-    expect(allowTo(actions, "verifier-1")).toBe(true);
+    expect(actions.some((a) => a.kind === "hold" && a.sessionKey === "verifier-1")).toBe(true);
     expect(replies(actions).some((r) => r.sessionKey === "planner-1")).toBe(false);
   });
 });

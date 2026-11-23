@@ -312,6 +312,17 @@ export class Orchestrator {
         case "undeliverable":
           this.addUndelivered(task, action.role, action.text);
           break;
+        case "resume-launch": {
+          const key = task.assigned[action.role];
+          const sid = key ? (this.store.state.sessions[key]?.activeSessionId ?? null) : null;
+          if (sid === null) {
+            this.addUndelivered(task, action.role, action.instruction);
+          } else {
+            this.deliverLaunch(task, action.role, action.instruction, sid, true);
+            this.emitNotify(task, `resume-launch-${action.role}`, "info", `${action.role.toUpperCase()} 창을 이어서 새로 띄웠습니다 — 이전 창은 닫으세요`);
+          }
+          break;
+        }
       }
     }
     this.store.save();

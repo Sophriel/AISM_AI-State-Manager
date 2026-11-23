@@ -353,7 +353,7 @@ describe("CODER 배정 게이트", () => {
 });
 
 describe("시나리오 (launcher·파일 주입)", () => {
-  it("새 작업 → PLANNER Stop allow → bind+hold+VERIFIER launch → REVISE block → … → PASS: VERIFIER allow + notify + PLANNER block(todo 지시)", () => {
+  it("새 작업 → PLANNER Stop allow → bind+hold+VERIFIER launch → REVISE block → … → PASS: VERIFIER hold(파킹) + notify + PLANNER block(todo 지시)", () => {
     const env = setup();
     const { orchestrator, store, sessions, plansDir, folder, taskDir } = env;
 
@@ -406,14 +406,14 @@ describe("시나리오 (launcher·파일 주입)", () => {
     expect(reply4).toEqual({ action: "block", reason: instructionVerifyPlan(2) }); // VERIFIER block
     expect(sessions.stateOf(verifyKey)).toBe("working");
 
-    // Step 6 — VERIFIER가 plan-v2-verify.md(PASS) 생성 후 Stop → VERIFIER allow + notify + PLANNER block(todo 지시, W5).
+    // Step 6 — VERIFIER가 plan-v2-verify.md(PASS) 생성 후 Stop → VERIFIER hold(파킹, plan-v5 P6) + notify + PLANNER block(todo 지시, W5).
     fs.writeFileSync(path.join(taskDir, "plan-v2-verify.md"), "# verify\n\n판정: PASS\n");
     let reply6: Reply | null = null;
     orchestrator.handleStop(verifyKey, { session_id:"v1" }, (r) => (reply6 = r), () => {});
-    expect(reply6).toEqual({ action: "allow" }); // VERIFIER allow
+    expect(reply6).toBeNull(); // VERIFIER hold — reply 방출 안 됨 (plan-v5 P6)
     expect(reply5).toEqual({ action: "block", reason: instructionApproveAndTodo(2) }); // PLANNER block (W5)
     expect(sessions.stateOf(planKey)).toBe("working");
-    expect(sessions.stateOf(verifyKey)).toBe("idle");
+    expect(sessions.stateOf(verifyKey)).toBe("parked"); // VERIFIER 파킹 대기 (plan-v5 P6)
     const passNotify = store.readTaskEvents(task.id).find((e) => e.type === "notify" && e.key === "pass-v2");
     expect(passNotify).toBeDefined();
 
@@ -829,21 +829,22 @@ describe("T10 시나리오 (W1·W4·W5·W6)", () => {
     orchestrator.handleStop("planner-1", { session_id: "p1" }, (r) => (replyP1 = r), () => {});
     expect(sessions.stateOf("planner-1")).toBe("parked");
 
-    // (a) VERIFIER가 PASS를 쓰고 Stop → 행 8: VERIFIER allow + notify pass-v1 + PLANNER block + 기록.
+    // (a) VERIFIER가 PASS를 쓰고 Stop → 행 8: VERIFIER hold(파킹, plan-v5 P6) + notify pass-v1 + PLANNER block + 기록.
     fs.writeFileSync(path.join(taskDir, "plan-v1-verify.md"), "# verify\n\n판정: PASS\n");
     let replyV1: Reply | null = null;
     orchestrator.handleStop("verifier-1", { session_id: "v1" }, (r) => (replyV1 = r), () => {});
-    expect(replyV1).toEqual({ action: "allow" });
-    expect(sessions.stateOf("verifier-1")).toBe("idle");
+    expect(replyV1).toBeNull(); // VERIFIER hold — 방출 안 됨 (plan-v5 P6)
+    expect(sessions.stateOf("verifier-1")).toBe("parked"); // 파킹 대기 (plan-v5 P6)
     expect(replyP1).toEqual({ action: "block", reason: instructionApproveAndTodo(1) });
     expect(sessions.stateOf("planner-1")).toBe("working");
     expect(task.record.instructed).toContain("todo-v1");
     expect(store.readTaskEvents(task.id).some((e) => e.type === "notify" && e.key === "pass-v1")).toBe(true);
 
-    // (b) PLANNER working일 때 PASS → PLANNER에 대한 Action 없음.
+    // (b) PLANNER working일 때 PASS → PLANNER에 대한 Action 없음. 재-Stop 시 이전 hold가 allow로 방출(replyV1), 새 Stop은 다시 hold.
     let replyV2: Reply | null = null;
     orchestrator.handleStop("verifier-1", { session_id: "v1" }, (r) => (replyV2 = r), () => {});
-    expect(replyV2).toEqual({ action: "allow" });
+    expect(replyV1).toEqual({ action: "allow" }); // 이전 hold 방출 (plan-v5 P6)
+    expect(replyV2).toBeNull(); // 새 Stop — 다시 hold (plan-v5 P6)
     expect(sessions.stateOf("planner-1")).toBe("working");
 
     // (c) 새 작업 — PLANNER Stop(IN_REVIEW+PASS, 미기록) → 행 4p block 1회 → 다음 Stop allow.
@@ -2693,6 +2694,181 @@ describe("T6 — 표시 queued·queue·commit-done (S-4)", () => {
     expect(r).toEqual({ ok: true, status: 200 });
     expect(env.orchestrator.pendingAction(task)).toEqual({ kind: "done", t: 1, commit: "done" });
     expect(env.orchestrator.getState(task.id).assignedDisplay.coder).toBe("idle");
+
+    env.cleanup();
+  });
+});
+
+describe("P6 — idle 역할 resume-launch (ADR 0026)", () => {
+  // task + 세션(플래너·버리파이어·코더) 설정 도우미. 상태·activeSessionId 옵션.
+  function envWithSessions(opts: {
+    plannerState?: string;
+    verifierState?: string;
+    coderState?: string;
+    verifierActive?: string | null;
+    coderActive?: string | null;
+  } = {}) {
+    const env = setup();
+    const { store, sessions, taskDir, folder } = env;
+    const task = seedTask(store, {
+      folder,
+      assigned: { planner: "planner-1", verifier: "verifier-1", coder: "coder-1" },
+    });
+    store.state.sessions["planner-1"] = { role: "planner", project: "EWE", folder, launchedAt: 0, sessionIds: ["p1"], activeSessionId: "p1", switchedOnce: false, task: task.id };
+    store.state.sessions["verifier-1"] = { role: "verifier", project: "EWE", folder, launchedAt: 0, sessionIds: ["v1"], activeSessionId: opts.verifierActive !== undefined ? opts.verifierActive : "v1", switchedOnce: false, task: task.id };
+    store.state.sessions["coder-1"] = { role: "coder", project: "EWE", folder, launchedAt: 0, sessionIds: ["c1"], activeSessionId: opts.coderActive !== undefined ? opts.coderActive : "c1", switchedOnce: false, task: task.id };
+    sessions.register("planner-1", opts.plannerState ?? "working");
+    sessions.register("verifier-1", opts.verifierState ?? "working");
+    sessions.register("coder-1", opts.coderState ?? "working");
+    fs.mkdirSync(taskDir, { recursive: true });
+    return { env, task };
+  }
+
+  it("(a) VERIFIER parked(행 8 hold 후) 상태에서 PLANNER Stop(IN_REVIEW·verify 없음) → VERIFIER에 block", () => {
+    const { env, task } = envWithSessions();
+    const { orchestrator, store, sessions, taskDir } = env;
+
+    fs.writeFileSync(path.join(taskDir, "plan-v1.md"), "Status: IN_REVIEW\n");
+    fs.writeFileSync(path.join(taskDir, "plan-v1-verify.md"), "# verify\n\n판정: PASS\n");
+
+    // 1) VERIFIER Stop → 행 8 (PASS) → hold → parked.
+    let replyV: Reply | null = null;
+    orchestrator.handleStop("verifier-1", { session_id: "v1" }, (r) => (replyV = r), () => {});
+    expect(sessions.stateOf("verifier-1")).toBe("parked");
+
+    // 2) verify 파일 삭제 → PLANNER Stop → 행 3 (IN_REVIEW·verify 없음) → VERIFIER(parked)에 block.
+    fs.rmSync(path.join(taskDir, "plan-v1-verify.md"));
+    orchestrator.handleStop("planner-1", { session_id: "p1" }, () => {}, () => {});
+    expect(sessions.stateOf("verifier-1")).toBe("working"); // block → working
+    expect(replyV).toEqual({ action: "block", reason: instructionVerifyPlan(1) });
+
+    env.cleanup();
+  });
+
+  it("(b) VERIFIER idle + activeSessionId 있음 → resume-launch(resumeSessionId) + notify resume-launch-verifier", () => {
+    const { env, task } = envWithSessions({ verifierState: "idle" });
+    const { orchestrator, store, taskDir, launchCalls } = env;
+
+    fs.writeFileSync(path.join(taskDir, "plan-v1.md"), "Status: IN_REVIEW\n");
+    // verify 파일 없음.
+
+    // PLANNER Stop → 행 3 → VERIFIER(idle)에 resume-launch.
+    orchestrator.handleStop("planner-1", { session_id: "p1" }, () => {}, () => {});
+    const launchCall = launchCalls.find((c) => c.role === "verifier");
+    expect(launchCall).toBeDefined();
+    expect(launchCall?.resumeSessionId).toBe("v1");
+    const notifyEvents = store.readTaskEvents(task.id).filter((e) => e.type === "notify");
+    expect(notifyEvents.some((e) => e.key === "resume-launch-verifier")).toBe(true);
+
+    env.cleanup();
+  });
+
+  it("(c) VERIFIER idle + activeSessionId 없음 → task.undelivered에 추가", () => {
+    const { env, task } = envWithSessions({ verifierState: "idle", verifierActive: null });
+    const { orchestrator, taskDir } = env;
+
+    fs.writeFileSync(path.join(taskDir, "plan-v1.md"), "Status: IN_REVIEW\n");
+
+    // PLANNER Stop → 행 3 → VERIFIER(idle, activeSessionId null)에 resume-launch → undelivered.
+    orchestrator.handleStop("planner-1", { session_id: "p1" }, () => {}, () => {});
+    expect(task.undelivered).toEqual([{ role: "verifier", text: instructionVerifyPlan(1) }]);
+
+    env.cleanup();
+  });
+
+  it("(d) PLANNER idle + VERIFIER Stop(REVISE) → undelivered(planner)", () => {
+    const { env, task } = envWithSessions({ plannerState: "idle" });
+    const { orchestrator, taskDir } = env;
+
+    fs.writeFileSync(path.join(taskDir, "plan-v1.md"), "Status: IN_REVIEW\n");
+    fs.writeFileSync(path.join(taskDir, "plan-v1-verify.md"), "# verify\n\n판정: REVISE\n");
+
+    // VERIFIER Stop → 행 6 (REVISE, N=1 < confirmFromVersion) → PLANNER(idle)에 undeliverable.
+    orchestrator.handleStop("verifier-1", { session_id: "v1" }, () => {}, () => {});
+    expect(task.undelivered).toEqual([{ role: "planner", text: instructionPlanRevise(1) }]);
+
+    env.cleanup();
+  });
+
+  it("(e) CODER idle + TODO_READY(todo verify 없음) → CODER resume-launch(resumeSessionId)", () => {
+    const { env } = envWithSessions({ coderState: "idle" });
+    const { orchestrator, taskDir, launchCalls } = env;
+
+    fs.writeFileSync(path.join(taskDir, "plan-v1.md"), "Status: TODO_READY\n");
+    fs.writeFileSync(path.join(taskDir, "todo-v1.md"), "- [ ] T1\n");
+    // todo-v1-verify.md 없음.
+
+    // PLANNER Stop → 행 5t (TODO_READY·todo verify 없음) → CODER(idle)에 resume-launch.
+    orchestrator.handleStop("planner-1", { session_id: "p1" }, () => {}, () => {});
+    const launchCall = launchCalls.find((c) => c.role === "coder");
+    expect(launchCall).toBeDefined();
+    expect(launchCall?.resumeSessionId).toBe("c1");
+
+    env.cleanup();
+  });
+});
+
+describe("commitDoneT — todo 번호 단위 커밋 완료 (plan-v5 P5)", () => {
+  it("todo-v1 커밋 완료 후 todo-v2 등장 → done.commit planned, 재 commitDone → 200·commitDoneT 2·잠금 해제", () => {
+    const env = setup({ gitInfo: () => ({ branch: "main" }) });
+    const { store, sessions, taskDir, folder } = env;
+
+    const task = seedTask(store, { folder, assigned: { planner: null, verifier: null, coder: "coder-1" } });
+    addSession(store, "coder-1", "coder", task, folder);
+    sessions.register("coder-1", "idle");
+    fs.mkdirSync(taskDir, { recursive: true });
+    fs.writeFileSync(path.join(taskDir, "plan-v1.md"), "Status: DONE\n");
+    fs.writeFileSync(path.join(taskDir, "todo-v1.md"), "- [x] T1\n");
+    fs.writeFileSync(path.join(taskDir, "todo-v1-verify.md"), "# verify\n\n판정: PASS\n");
+    fs.writeFileSync(path.join(taskDir, "todo-v1-checklist.md"), "- [ ] 확인\n");
+    fs.writeFileSync(path.join(taskDir, "todo-v1-commit.md"), "# todo-v1 커밋 계획\n## 커밋 1\n- 메시지: m\n");
+
+    // todo-v1 커밋 완료 → commitDoneT 1, done.commit done.
+    env.orchestrator.commitDone(task.id);
+    expect(task.commitDoneT).toBe(1);
+    expect(env.orchestrator.pendingAction(task)).toEqual({ kind: "done", t: 1, commit: "done" });
+
+    // todo-v2·commit·checklist 등장 → 최신 todo 2, commitDoneT(1) ≠ 2 → done.commit planned.
+    fs.writeFileSync(path.join(taskDir, "todo-v2.md"), "- [ ] T1\n");
+    fs.writeFileSync(path.join(taskDir, "todo-v2-commit.md"), "# todo-v2 커밋 계획\n## 커밋 1\n- 메시지: m\n");
+    fs.writeFileSync(path.join(taskDir, "todo-v2-checklist.md"), "- [ ] 확인\n");
+    expect(env.orchestrator.pendingAction(task)).toEqual({ kind: "done", t: 2, commit: "planned" });
+
+    // 재 commitDone → 200·commitDoneT 2·코딩 잠금 해제, done.commit done.
+    store.state.codingLocks["EWE"] = { task: task.id, since: 0 };
+    const r = env.orchestrator.commitDone(task.id);
+    expect(r).toEqual({ ok: true, status: 200 });
+    expect(task.commitDoneT).toBe(2);
+    expect(store.state.codingLocks["EWE"]).toBeUndefined();
+    expect(env.orchestrator.pendingAction(task)).toEqual({ kind: "done", t: 2, commit: "done" });
+
+    env.cleanup();
+  });
+
+  it("commitDoneT === 0인 작업 → Orchestrator 생성 시 최신 todo 번호로 변환·저장", () => {
+    const env = setup({ gitInfo: () => ({ branch: "main" }) });
+    const { store, taskDir, folder } = env;
+
+    const task = seedTask(store, { folder, commitDoneT: 0 });
+    fs.mkdirSync(taskDir, { recursive: true });
+    fs.writeFileSync(path.join(taskDir, "todo-v3.md"), "- [ ] T1\n");
+
+    // 새 Orchestrator 생성 → constructor가 commitDoneT 0을 최신 todo 번호(3)로 변환·저장.
+    const sessions2 = new Sessions(store, 3300, { setTimer: () => ({} as Timer), clearTimer: () => {} });
+    const orchestrator2 = new Orchestrator({
+      config: env.config,
+      store,
+      sessions: sessions2,
+      launch: () => {
+        throw new Error("unused");
+      },
+      aismRoot: env.root,
+      toast: () => {},
+      gitInfo: () => ({ branch: "main" }),
+    });
+    expect(task.commitDoneT).toBe(3);
+    // 저장 확인 — 디스크에서 다시 읽으면 3.
+    expect(store.load().tasks[task.id].commitDoneT).toBe(3);
 
     env.cleanup();
   });

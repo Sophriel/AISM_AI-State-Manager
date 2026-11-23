@@ -35,7 +35,8 @@ export type Action =
   | { kind: "launch"; role: Role; instruction?: string }
   | { kind: "notify"; key: string; level: "info" | "warn"; message: string; copyText?: string }
   | { kind: "record"; notified?: string[]; consecutiveBlocks?: Record<string, number>; instructed?: string[] }
-  | { kind: "undeliverable"; role: Role; text: string };
+  | { kind: "undeliverable"; role: Role; text: string }
+  | { kind: "resume-launch"; role: Role; instruction: string };
 
 // 지시 문장 (한국어, 고정) — plan-v3 §3.6.
 export function instructionVerifyPlan(N: number): string {
@@ -141,16 +142,18 @@ export function evaluate(input: MachineInput): Action[] {
     }
   };
 
-  // 지시 전달 규칙 (R1-4, R1-5, ADR 0011). "blocked" = peer가 parked여서 block을 냈다.
-  // 배정 없음 → launch, parked → block, idle·detached → undeliverable, working·unbound → 없음.
+  // 지시 전달 규칙 (R1-4, R1-5, ADR 0011, ADR 0026). "blocked" = peer가 parked여서 block을 냈다.
+  // 배정 없음 → launch, parked → block, idle(VERIFIER·CODER) → resume-launch, PLANNER idle·detached → undeliverable, working·unbound → 없음.
   const deliver = (role: Role, text: string): "blocked" | "none" => {
     const peer = peers[role];
     if (!peer) {
       actions.push({ kind: "launch", role, instruction: text });
     } else if (peer.state === "parked") {
       return block(peer.sessionKey, text) ? "blocked" : "none";
+    } else if (peer.state === "idle" && role !== "planner") {
+      actions.push({ kind: "resume-launch", role, instruction: text }); // plan-v5 P6 — 이어서 새 창 (ADR 0026).
     } else if (peer.state === "idle" || peer.state === "detached") {
-      actions.push({ kind: "undeliverable", role, text }); // notify는 내지 않는다 — T12가 처리.
+      actions.push({ kind: "undeliverable", role, text }); // PLANNER idle·detached (ADR 0011).
     }
     // working / unbound → 아무 Action 없음.
     return "none";
@@ -279,8 +282,8 @@ export function evaluate(input: MachineInput): Action[] {
     }
 
     if (snapshot.verdict === "PASS") {
-      // 행 8 — PASS (W5): PLANNER에 todo 작성을 지시.
-      allow(sender.sessionKey);
+      // 행 8 — PASS (W5): PLANNER에 todo 작성을 지시. VERIFIER는 파킹 대기 (plan-v5 P6).
+      hold(sender.sessionKey);
       notify(`pass-v${part(N)}`, "info", `plan-v${part(N)} PASS — PLANNER에 todo 작성을 지시합니다`);
       const key = `todo-v${N ?? 0}`;
       if (!instructed.has(key)) {
