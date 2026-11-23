@@ -262,12 +262,6 @@
 }
 
 /* 시작 화면 (T9) */
-.project-label {
-  color: var(--text-h);
-  font-family: var(--mono);
-  font-size: 16px;
-}
-
 .start-screen {
   display: flex;
   flex-direction: column;

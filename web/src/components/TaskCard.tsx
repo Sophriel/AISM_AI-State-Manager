@@ -1,4 +1,4 @@
-// T13 — 작업 카드. 프로젝트·폴더·plan vN·Status·판정·역할 상태 배지·pendingAction 표시.
+// T13 — 작업 카드. 프로젝트·폴더·plan vN·Status·Verify·역할 상태 배지·pendingAction 표시.
 import type { Display, PendingAction, State } from "../api";
 
 // 표시 상태별 색·라벨 (plan-v3 §3 B).
@@ -86,11 +86,13 @@ function TaskCard({ state, planDisplay, verifyDisplay, coderDisplay }: Props) {
         <span className="value">{task ? (task.folder ?? "새 작업") : "—"}</span>
       </div>
       <div className="task-row">
-        <span className="label">Plan</span>
-        <span className="value">{snap?.latestN != null ? `v${snap.latestN}` : "—"}</span>
         <span className="label">Status</span>
         <span className="value">{snap?.status ?? "—"}</span>
-        <span className="label">판정</span>
+      </div>
+      <div className="task-row">
+        <span className="label">Plan</span>
+        <span className="value">{snap?.latestN != null ? `v${snap.latestN}` : "—"}</span>
+        <span className="label">Verify</span>
         <span className={`value verdict-${(snap?.verdict ?? "none").toLowerCase()}`}>
           {snap?.verdict ?? "—"}
         </span>
@@ -98,11 +100,11 @@ function TaskCard({ state, planDisplay, verifyDisplay, coderDisplay }: Props) {
       <div className="task-row">
         <span className="label">Todo</span>
         <span className="value">{state?.todo?.latestN != null ? `v${state.todo.latestN}` : "—"}</span>
-        <span className="label">판정</span>
+        <span className="label">Verify</span>
         <span className={`value verdict-${(state?.todo?.verdict ?? "none").toLowerCase()}`}>
           {state?.todo?.verdict ?? "—"}
         </span>
-        <span className="label">커밋</span>
+        <span className="label">Commit</span>
         <span className="value">{!state?.todo || !state.todo.commitPlanExists ? "—" : "계획"}</span>
       </div>
       <div className="task-row sessions">

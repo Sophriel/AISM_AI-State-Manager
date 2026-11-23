@@ -11,6 +11,7 @@ import {
   type NotifyPayload,
   type Role,
   type State,
+  type Task,
 } from "./api";
 import StartScreen from "./components/StartScreen";
 import TaskCard from "./components/TaskCard";
@@ -44,6 +45,12 @@ function canSelectEndpoint(state: State | null, role: Role): boolean {
   if (!task) return false;
   const s = state.assignedState[role];
   return s === null || s === "detached";
+}
+
+// 창 제목 — 작업 화면이면 `AISM - <프로젝트> - <폴더>`(폴더 없으면 `새 작업`), 아니면 `AISM`.
+function windowTitle(task: Task | null | undefined, isTaskScreen: boolean): string {
+  if (!isTaskScreen || !task) return "AISM";
+  return `AISM - ${task.project} - ${task.folder ?? "새 작업"}`;
 }
 
 const ROLES = ["planner", "verifier", "coder"] as const;
@@ -217,13 +224,18 @@ function App() {
 
   const isTaskScreen = taskId !== null;
 
+  useEffect(() => {
+    document.title = windowTitle(state?.task, isTaskScreen);
+  }, [state?.task?.project, state?.task?.folder, isTaskScreen]);
+
   return (
     <div className="app" onClick={requestPermission}>
-      <header className="app-header">
-        <h1>AISM</h1>
-        {isTaskScreen && state?.task && <span className="project-label">{state.task.project}</span>}
-        {error && <span className="error">{error}</span>}
-      </header>
+      {(!isTaskScreen || error) && (
+        <header className="app-header">
+          {!isTaskScreen && <h1>AISM</h1>}
+          {error && <span className="error">{error}</span>}
+        </header>
+      )}
 
       {isTaskScreen ? (
         <>
