@@ -9,6 +9,7 @@
 - **M2 — todo 검증 → CODER** (완료 — `.claude/plans/261114-m2-coder-loop/`, 다듬기 `261116-m2-polish`): W-5, W-6, W-8, W-11, S-9(`--resume`), G-5 Windows 토스트, G-7.
 - **M3 — 커밋·프로젝트** (`.claude/plans/261117-m3-commit-projects/`, 다듬기 `261117-m3-polish`): W-12, X-1(UI 등록), X-4.
 - **M4 — 병렬 작업** (`.claude/plans/261118-parallel-tasks/`): 1단계 G-8, W-13(부분), G-1(창별 작업). 2단계 S-4, W-13 잠금 (`.claude/plans/261120-parallel-tasks-stage2/`).
+- **M5 — 역할별 모델 선택** (`.claude/plans/261123-role-endpoint-select/`): R-9.
 
 ## 1. 역할 (Role)
 
@@ -22,6 +23,7 @@
 | R-6 | 역할별 스킬 지정 | P1 | 제안 |
 | R-7 | 역할 추가/편집 UI | P2 | 제안 |
 | R-8 | 역할별 세션 모드: **유지**(같은 세션을 오가며 맥락 보존) / **매번 새로**(파일로만 핸드오프) | P0 | 부분 (유지 방식만, M1) |
+| R-9 | 작업 화면에서 역할별 엔드포인트(모델) 선택 — 작업 단위 | P1 | 완료 (M5) |
 
 ## 2. 워크플로우 (상태 머신)
 
