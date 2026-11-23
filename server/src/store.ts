@@ -62,7 +62,7 @@ export type EventType =
   | "close-task"
   | "hold"
   | "clear-timeline"
-  | "endpoint";
+  | "endpoint"; // 기록 중단(plan-v5) — 옛 이벤트 파일 표시용으로 유지
 
 export const EVENT_TEXT_MAX = 2000; // 이벤트에 저장하는 응답·지시 문구 최대 길이 (M2 polish §3 A)
 

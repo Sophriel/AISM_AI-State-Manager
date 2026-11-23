@@ -2863,7 +2863,7 @@ describe("setEndpoint (역할별 엔드포인트 선택)", () => {
     env.cleanup();
   });
 
-  it("(c) 성공 — endpoint 이벤트 {role, endpoint, from} 기록, getState().endpoints·endpointNames, 기본값과 같은 값도 저장", () => {
+  it("(c) 성공 — endpoint 이벤트 기록 안 함, getState().endpoints·endpointNames, 기본값과 같은 값도 저장", () => {
     const env = setup({ endpoints: localEndpoints });
     const { orchestrator, store, folder } = env;
     const task = seedTask(store, { folder });
@@ -2872,8 +2872,7 @@ describe("setEndpoint (역할별 엔드포인트 선택)", () => {
     expect(r).toEqual({ ok: true, status: 200 });
     expect(task.endpoints).toEqual({ coder: "cloud" });
     const ev = store.readTaskEvents(task.id).filter((e) => e.type === "endpoint");
-    expect(ev).toHaveLength(1);
-    expect(ev[0]).toMatchObject({ type: "endpoint", role: "coder", endpoint: "cloud", from: "local" });
+    expect(ev).toHaveLength(0);
 
     const st = orchestrator.getState(task.id);
     expect(st.endpoints).toEqual({ planner: "cloud", verifier: "local", coder: "cloud" });
@@ -2899,19 +2898,25 @@ describe("setEndpoint (역할별 엔드포인트 선택)", () => {
     orchestrator.handleStop("planner-1", { session_id: "p1" }, () => {}, () => {});
     expect(task.assigned.verifier).toBeTruthy();
     expect(launchCalls.at(-1)?.endpoint).toBe("cloud");
+    const kAuto = task.assigned.verifier!;
+    expect(store.readTaskEvents(task.id).filter((e) => e.type === "launch" && e.sessionKey === kAuto).at(-1)).toMatchObject({ endpoint: "cloud" });
 
     // relaunch(new) — working 허용, 선택 엔드포인트로.
     const r1 = orchestrator.relaunch(task.id, "verifier", "new");
     expect(r1).toEqual({ ok: true, status: 200 });
     expect(launchCalls.at(-1)?.endpoint).toBe("cloud");
+    const kNew = task.assigned.verifier!;
+    expect(store.readTaskEvents(task.id).filter((e) => e.type === "launch" && e.sessionKey === kNew).at(-1)).toMatchObject({ endpoint: "cloud" });
 
     // relaunch(resume) — 새 세션의 activeSessionId로 이어서, 선택 엔드포인트로.
-    const key2 = task.assigned.verifier!;
+    const key2 = kNew;
     store.state.sessions[key2].activeSessionId = "v-resume";
     const r2 = orchestrator.relaunch(task.id, "verifier", "resume");
     expect(r2).toEqual({ ok: true, status: 200 });
     expect(launchCalls.at(-1)?.endpoint).toBe("cloud");
     expect(launchCalls.at(-1)?.resumeSessionId).toBe("v-resume");
+    const kResume = task.assigned.verifier!;
+    expect(store.readTaskEvents(task.id).filter((e) => e.type === "launch" && e.sessionKey === kResume).at(-1)).toMatchObject({ endpoint: "cloud" });
     env.cleanup();
   });
 
@@ -2966,12 +2971,25 @@ describe("setEndpoint (역할별 엔드포인트 선택)", () => {
     const q = internal(env.orchestrator).localQueue["local"] ?? [];
     expect(q.filter((w) => w.taskId === taskB.id)).toHaveLength(1);
 
+    // M1 — broadcast 시점: setEndpoint 호출 전 캡처 클라이언트 등록, 호출 후 마지막 상태에 재전달 결과 반영.
+    function fakeClient(onWrite?: (raw: string) => void) {
+      return { write: (raw: string) => onWrite?.(raw), close: () => {} };
+    }
+    const states: unknown[] = [];
+    orchestrator.getHub().add(fakeClient((s) => states.push(s)), taskB.id);
+
     const before = launchCalls.length;
     expect(orchestrator.setEndpoint(taskB.id, "verifier", "cloud")).toEqual({ ok: true, status: 200 });
     expect(launchCalls).toHaveLength(before + 1);
     expect(launchCalls.at(-1)?.endpoint).toBe("cloud");
     expect(launchCalls.at(-1)?.firstInstruction).toBe("지시");
     expect((internal(env.orchestrator).localQueue["local"] ?? []).filter((w) => w.taskId === taskB.id)).toHaveLength(0);
+    // ① getState — 그 역할 표시가 queued 아님.
+    expect(orchestrator.getState(taskB.id).assignedDisplay.verifier).not.toBe("queued");
+    // ② 마지막 broadcast 상태에서도 queued 아님 (broadcast가 재전달 이후).
+    expect(states.length).toBeGreaterThan(0);
+    const lastState = JSON.parse(String(states[states.length - 1]).split("data: ")[1]) as { assignedDisplay: Record<string, unknown> };
+    expect(lastState.assignedDisplay.verifier).not.toBe("queued");
     env.cleanup();
   });
 
@@ -2989,6 +3007,17 @@ describe("setEndpoint (역할별 엔드포인트 선택)", () => {
     expect(launchCalls).toHaveLength(before + 1);
     expect(launchCalls.at(-1)?.endpoint).toBe("local"); // 역할 기본값
     expect(orchestrator.getState(task.id).endpoints?.coder).toBe("local");
+    env.cleanup();
+  });
+
+  it("(i) newTask의 PLANNER launch 이벤트에 endpoint 필드(설정 기본값 cloud) 기록", () => {
+    const env = setup({ endpoints: localEndpoints });
+    const { orchestrator, store } = env;
+    const r0 = orchestrator.newTask("EWE");
+    expect(r0.ok).toBe(true);
+    const ev = store.readTaskEvents(r0.taskId!).filter((e) => e.type === "launch");
+    expect(ev).toHaveLength(1);
+    expect(ev[0]).toMatchObject({ role: "planner", endpoint: "cloud" });
     env.cleanup();
   });
 });

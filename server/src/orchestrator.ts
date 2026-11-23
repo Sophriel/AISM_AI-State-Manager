@@ -313,6 +313,7 @@ export class Orchestrator {
   // 역할 세션 실행 (launch Action). instruction이 있으면 첫 지시로 전달·기록 (M2 polish §3 B).
   // resumeSessionId가 있으면 그 세션 이어서 (S-9), relaunch면 launch 이벤트에 표시. 반환 sessionKey.
   private launchRole(task: Task, role: Role, instruction?: string, resumeSessionId?: string, relaunch?: boolean): string {
+    const endpoint = this.effectiveEndpoint(task, role);
     const result = this.launch({
       config: this.config,
       project: task.project,
@@ -321,7 +322,7 @@ export class Orchestrator {
       aismRoot: this.aismRoot,
       store: this.store,
       task: task.id,
-      endpoint: this.effectiveEndpoint(task, role),
+      endpoint,
       ...(instruction ? { firstInstruction: instruction } : {}),
       ...(resumeSessionId ? { resumeSessionId } : {}),
     });
@@ -334,6 +335,7 @@ export class Orchestrator {
       type: "launch",
       role,
       sessionKey: result.sessionKey,
+      endpoint,
       ...(relaunch ? { relaunch: true } : {}),
       ...(resumeSessionId ? { resume: true } : {}),
       ...(instruction ? { instruction: instruction.slice(0, EVENT_TEXT_MAX) } : {}),
@@ -720,6 +722,7 @@ export class Orchestrator {
     const id = makeTaskId(new Date(), crypto.randomBytes(2).toString("hex"));
     const task = newTask(id, project, Date.now());
     this.store.state.tasks[id] = task;
+    const endpoint = this.effectiveEndpoint(task, "planner");
     const result = this.launch({
       config: this.config,
       project,
@@ -728,12 +731,12 @@ export class Orchestrator {
       aismRoot: this.aismRoot,
       store: this.store,
       task: id,
-      endpoint: this.effectiveEndpoint(task, "planner"),
+      endpoint,
     });
     this.sessions.register(result.sessionKey, folder !== undefined ? "working" : "unbound");
     this.assign(task, "planner", result.sessionKey);
     if (folder !== undefined) this.bindTask(task, folder, result.sessionKey);
-    this.store.appendSessionEvent(result.sessionKey, { type: "launch", role: "planner", sessionKey: result.sessionKey });
+    this.store.appendSessionEvent(result.sessionKey, { type: "launch", role: "planner", sessionKey: result.sessionKey, endpoint });
     this.store.save();
     this.broadcastTask(task);
     this.broadcastLobby();
@@ -810,6 +813,7 @@ export class Orchestrator {
     }
     // 첫 지시 없음 — 기존 코드 그대로 (즉시 launch·register·assign·이벤트).
     const pendingText = task.undelivered.find((u) => u.role === role)?.text;
+    const endpoint = this.effectiveEndpoint(task, role);
     const result = this.launch({
       config: this.config,
       project: task.project,
@@ -818,7 +822,7 @@ export class Orchestrator {
       aismRoot: this.aismRoot,
       store: this.store,
       task: task.id,
-      endpoint: this.effectiveEndpoint(task, role),
+      endpoint,
       ...(mode === "resume" && resumeId ? { resumeSessionId: resumeId } : {}),
       ...(pendingText ? { firstInstruction: pendingText } : {}),
     });
@@ -832,6 +836,7 @@ export class Orchestrator {
       type: "launch",
       role,
       sessionKey: result.sessionKey,
+      endpoint,
       relaunch: true,
       ...(mode === "resume" ? { resume: true } : {}),
       ...(pendingText ? { instruction: pendingText.slice(0, EVENT_TEXT_MAX) } : {}),
@@ -850,12 +855,8 @@ export class Orchestrator {
     const assignedKey = task.assigned[role];
     const st = assignedKey ? (this.sessions.stateOf(assignedKey) ?? "detached") : null;
     if (st !== null && st !== "detached") return { ok: false, status: 409, error: `session is ${st}` };
-    const from = this.effectiveEndpoint(task, role);
-    // ① 선택 저장 → ② 이벤트·저장·broadcast → ③ 대기 중 launch 항목이 있으면 제거 후 새 엔드포인트 기준으로 재전달 (D5).
+    // ① 선택 저장 → ② 대기 launch 항목 재전달 (D5) → ③ 저장 → ④ broadcast (M1: 재전달 결과가 화면에 반영되도록 마지막).
     task.endpoints = { ...task.endpoints, [role]: endpoint };
-    this.store.appendTaskEvent(task.id, { type: "endpoint", role, endpoint, from });
-    this.store.save();
-    this.broadcastTask(task);
     for (const ep of Object.keys(this.localQueue)) {
       const i = this.localQueue[ep].findIndex((w) => w.taskId === task.id && w.role === role && w.kind === "launch");
       if (i >= 0) {
@@ -865,6 +866,8 @@ export class Orchestrator {
         break;
       }
     }
+    this.store.save();
+    this.broadcastTask(task);
     return { ok: true, status: 200 };
   }
 
