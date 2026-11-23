@@ -319,3 +319,80 @@ describe("makeTaskId (T2)", () => {
     expect(makeTaskId(new Date(2026, 10, 18, 9, 5, 7), "ab12")).toBe("t-20261118-090507-ab12");
   });
 });
+
+describe("Task endpoints 키 (역할별 엔드포인트 선택)", () => {
+  const baseTask = {
+    id: "t-1",
+    project: "EWE",
+    folder: null,
+    startedAt: 1000,
+    assigned: { planner: null, verifier: null, coder: null },
+    record: { notified: [], consecutiveBlocks: {}, instructed: [] },
+    undelivered: [],
+    commitDone: false,
+  };
+
+  it("(a) 키 8개 작업이 든 상태 통과", () => {
+    const s = new Store(dir);
+    fs.writeFileSync(
+      path.join(dir, "state.json"),
+      JSON.stringify({ tasks: { "t-1": baseTask }, sessions: {}, codingLocks: {}, codingQueue: [] }),
+      "utf8",
+    );
+    expect(s.load().tasks["t-1"]).toEqual(baseTask);
+  });
+
+  it("(b) endpoints 포함 9개 통과 및 save→load 왕복 후 값 유지", () => {
+    const s = new Store(dir);
+    s.state.tasks["t-1"] = { ...baseTask, endpoints: { coder: "cloud" } };
+    s.save();
+
+    const b = new Store(dir);
+    expect(b.load().tasks["t-1"].endpoints).toEqual({ coder: "cloud" });
+  });
+
+  it("(c) endpoints에 역할이 아닌 키(foo) → 빈 상태", () => {
+    const s = new Store(dir);
+    fs.writeFileSync(
+      path.join(dir, "state.json"),
+      JSON.stringify({
+        tasks: { "t-1": { ...baseTask, endpoints: { foo: "cloud" } } },
+        sessions: {},
+        codingLocks: {},
+        codingQueue: [],
+      }),
+      "utf8",
+    );
+    expect(s.load()).toEqual({ tasks: {}, sessions: {}, codingLocks: {}, codingQueue: [] });
+  });
+
+  it("(d) endpoints 값이 문자열이 아님 → 빈 상태", () => {
+    const s = new Store(dir);
+    fs.writeFileSync(
+      path.join(dir, "state.json"),
+      JSON.stringify({
+        tasks: { "t-1": { ...baseTask, endpoints: { coder: 1 } } },
+        sessions: {},
+        codingLocks: {},
+        codingQueue: [],
+      }),
+      "utf8",
+    );
+    expect(s.load()).toEqual({ tasks: {}, sessions: {}, codingLocks: {}, codingQueue: [] });
+  });
+
+  it("(e) endpoints: null → 빈 상태", () => {
+    const s = new Store(dir);
+    fs.writeFileSync(
+      path.join(dir, "state.json"),
+      JSON.stringify({
+        tasks: { "t-1": { ...baseTask, endpoints: null } },
+        sessions: {},
+        codingLocks: {},
+        codingQueue: [],
+      }),
+      "utf8",
+    );
+    expect(s.load()).toEqual({ tasks: {}, sessions: {}, codingLocks: {}, codingQueue: [] });
+  });
+});

@@ -14,6 +14,7 @@ export interface Task {
   record: TaskRecord;
   undelivered: Undelivered[];
   commitDone: boolean;
+  endpoints?: Partial<Record<Role, string>>; // 사용자가 고른 역할별 엔드포인트 (없으면 설정 기본값)
 }
 
 export interface SessionInfo {
@@ -51,7 +52,17 @@ export interface State {
   codingQueue: CodingWait[];
 }
 
-export type EventType = "stop" | "reply" | "launch" | "bind" | "notify" | "detach" | "close-task" | "hold" | "clear-timeline";
+export type EventType =
+  | "stop"
+  | "reply"
+  | "launch"
+  | "bind"
+  | "notify"
+  | "detach"
+  | "close-task"
+  | "hold"
+  | "clear-timeline"
+  | "endpoint";
 
 export const EVENT_TEXT_MAX = 2000; // 이벤트에 저장하는 응답·지시 문구 최대 길이 (M2 polish §3 A)
 
@@ -91,7 +102,7 @@ const isNumMap = (v: unknown): v is Record<string, number> =>
   isObj(v) && Object.values(v).every((x) => typeof x === "number");
 
 // "현재 형식" 검사 — 키가 정확히 일치하고 타입이 맞아야 true.
-// 최상위 키는 정확히 tasks·sessions·codingLocks·codingQueue, 각 작업 키 8개(id 포함)·tasks[k].id === k, 각 세션에 task(string|null).
+// 최상위 키는 정확히 tasks·sessions·codingLocks·codingQueue, 각 작업 키 8개(id 포함) 또는 9개(+선택적 endpoints)·tasks[k].id === k, 각 세션에 task(string|null).
 // codingLocks 값은 키 정확히 task(string)·since(number), codingQueue 항목은 키 정확히 task·sessionKey·text(string)·since(number).
 // 옛 형식(activeTask, 1단계 형식)은 이 검사를 통과하지 못해 기존 규칙대로 버려지고 경고한다.
 export function isCurrentState(x: unknown): x is State {
@@ -112,7 +123,19 @@ export function isCurrentState(x: unknown): x is State {
     if (!isObj(t)) return false;
     const tKeys = Object.keys(t);
     const expectedT = ["id", "project", "folder", "startedAt", "assigned", "record", "undelivered", "commitDone"];
-    if (tKeys.length !== expectedT.length || !expectedT.every((key) => tKeys.includes(key))) return false;
+    if (tKeys.length !== expectedT.length && tKeys.length !== expectedT.length + 1) return false;
+    if (!expectedT.every((key) => tKeys.includes(key))) return false;
+    if (tKeys.length === expectedT.length + 1) {
+      // 9개 — 추가 키는 endpoints만, null 아닌 일반 객체·역할 키·string 값.
+      const extra = tKeys.find((key) => !expectedT.includes(key));
+      if (extra !== "endpoints") return false;
+      const ep = t.endpoints;
+      if (!isObj(ep)) return false;
+      for (const [epKey, epVal] of Object.entries(ep)) {
+        if (!["planner", "verifier", "coder"].includes(epKey)) return false;
+        if (typeof epVal !== "string") return false;
+      }
+    }
     if (t.id !== k) return false;
     if (typeof t.project !== "string") return false;
     if (t.folder !== null && typeof t.folder !== "string") return false;

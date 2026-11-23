@@ -261,6 +261,68 @@ describe("launchSession", () => {
     expect(argsTxt.trimEnd().endsWith(`--resume abc-123 "AISM resume: 261111-alpha"`)).toBe(true);
   });
 
+  it("endpoint 지정 — 기본 local 역할에 cloud → local 변수 없음, 관리 변수 비움 줄 유지", () => {
+    const config = makeConfig();
+    const { dir } = launchSession({
+      config,
+      project: "EWE",
+      role: "verifier", // 기본 local
+      folder: "261111-alpha",
+      aismRoot,
+      task: null,
+      spawn: () => {},
+      now: NOW,
+      hex: "9a8b",
+      endpoint: "cloud",
+    });
+
+    const envBat = fs.readFileSync(path.join(dir, "env.bat"), "utf8");
+    expect(envBat).toContain('set "ANTHROPIC_BASE_URL="'); // 관리 변수 비움 줄
+    expect(envBat).not.toContain("http://127.0.0.1:8080"); // local 값 없음
+    expect(envBat).not.toContain('set "ANTHROPIC_AUTH_TOKEN=local"');
+  });
+
+  it("endpoint 지정 — 기본 cloud 역할에 local → local 묶음 set 줄", () => {
+    const config = makeConfig();
+    const { dir } = launchSession({
+      config,
+      project: "EWE",
+      role: "planner", // 기본 cloud
+      folder: "261111-alpha",
+      aismRoot,
+      task: null,
+      spawn: () => {},
+      now: NOW,
+      hex: "7c6d",
+      endpoint: "local",
+    });
+
+    const envBat = fs.readFileSync(path.join(dir, "env.bat"), "utf8");
+    expect(envBat).toContain('set "ANTHROPIC_BASE_URL=http://127.0.0.1:8080"');
+    expect(envBat).toContain('set "ANTHROPIC_AUTH_TOKEN=local"');
+    expect(envBat).toContain('set "ANTHROPIC_MODEL=Qwen3.8-27B-NVFP4-MTP-LOW"');
+    expect(envBat).toContain('set "CLAUDE_CODE_AUTO_COMPACT_WINDOW=200000"');
+  });
+
+  it("endpoint 지정 — 설정에 없는 이름 → 역할 기본 묶음", () => {
+    const config = makeConfig();
+    const { dir } = launchSession({
+      config,
+      project: "EWE",
+      role: "verifier", // 기본 local
+      folder: "261111-alpha",
+      aismRoot,
+      task: null,
+      spawn: () => {},
+      now: NOW,
+      hex: "5e4f",
+      endpoint: "nope",
+    });
+
+    const envBat = fs.readFileSync(path.join(dir, "env.bat"), "utf8");
+    expect(envBat).toContain('set "ANTHROPIC_BASE_URL=http://127.0.0.1:8080"'); // 역할 기본(local) 묶음
+  });
+
   it("firstInstruction — prompt.md 헤더 마지막 줄 'First instruction: …', 없으면 그 줄 없음 (M2 polish §3 B)", () => {
     const config = makeConfig();
     const { dir } = launchSession({

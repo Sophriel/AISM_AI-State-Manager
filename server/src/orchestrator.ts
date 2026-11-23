@@ -321,6 +321,7 @@ export class Orchestrator {
       aismRoot: this.aismRoot,
       store: this.store,
       task: task.id,
+      endpoint: this.effectiveEndpoint(task, role),
       ...(instruction ? { firstInstruction: instruction } : {}),
       ...(resumeSessionId ? { resumeSessionId } : {}),
     });
@@ -346,8 +347,10 @@ export class Orchestrator {
     return vars !== undefined && "ANTHROPIC_BASE_URL" in vars;
   }
 
-  private endpointOf(role: Role): string {
-    return this.config.roles[role].endpoint;
+  // 유효 엔드포인트 — 작업 선택이 설정에 있으면 그것, 아니면 역할 설정 기본값 (설정에서 지운 이름도 방어).
+  private effectiveEndpoint(task: Task, role: Role): string {
+    const chosen = task.endpoints?.[role];
+    return chosen !== undefined && chosen in this.config.endpoints ? chosen : this.config.roles[role].endpoint;
   }
 
   // 같은 작업·역할 항목이 있으면 그 자리 교체, 없으면 끝에 추가.
@@ -360,7 +363,7 @@ export class Orchestrator {
 
   // block 전달 — 로컬 엔드포인트가 사용 중이면 대기열로.
   private deliverBlock(task: Task, sessionKey: string, role: Role, text: string, lock?: "coding"): void {
-    const ep = this.endpointOf(role);
+    const ep = this.effectiveEndpoint(task, role);
     if (!this.isLocalEndpoint(ep)) {
       this.sessions.resolve(sessionKey, { action: "block", reason: text });
       return;
@@ -375,7 +378,7 @@ export class Orchestrator {
 
   // launch 전달 — 로컬 엔드포인트가 사용 중이면 대기열에 넣고 "queued".
   private deliverLaunch(task: Task, role: Role, text: string, resumeSessionId?: string, relaunch?: boolean): "launched" | "queued" {
-    const ep = this.endpointOf(role);
+    const ep = this.effectiveEndpoint(task, role);
     if (!this.isLocalEndpoint(ep) || !this.localBusy[ep]) {
       const key = this.launchRole(task, role, text, resumeSessionId, relaunch);
       if (this.isLocalEndpoint(ep)) this.localBusy[ep] = key;
@@ -619,6 +622,14 @@ export class Orchestrator {
       task,
       assignedState,
       assignedDisplay,
+      endpointNames: Object.keys(this.config.endpoints),
+      endpoints: task
+        ? {
+            planner: this.effectiveEndpoint(task, "planner"),
+            verifier: this.effectiveEndpoint(task, "verifier"),
+            coder: this.effectiveEndpoint(task, "coder"),
+          }
+        : null,
       snapshot: task && task.folder !== null ? this.taskSnapshot(task.project, task.folder) : null,
       todo: task && task.folder !== null ? this.todoSnapshot(task.project, task.folder) : null,
       sessions,
@@ -717,6 +728,7 @@ export class Orchestrator {
       aismRoot: this.aismRoot,
       store: this.store,
       task: id,
+      endpoint: this.effectiveEndpoint(task, "planner"),
     });
     this.sessions.register(result.sessionKey, folder !== undefined ? "working" : "unbound");
     this.assign(task, "planner", result.sessionKey);
@@ -806,6 +818,7 @@ export class Orchestrator {
       aismRoot: this.aismRoot,
       store: this.store,
       task: task.id,
+      endpoint: this.effectiveEndpoint(task, role),
       ...(mode === "resume" && resumeId ? { resumeSessionId: resumeId } : {}),
       ...(pendingText ? { firstInstruction: pendingText } : {}),
     });
@@ -826,6 +839,32 @@ export class Orchestrator {
     this.store.save();
     this.broadcastTask(task);
     this.broadcastLobby();
+    return { ok: true, status: 200 };
+  }
+
+  // POST /api/tasks/endpoint — 작업 단위 엔드포인트 선택 (D1~D5). 세션 창이 열려 있으면 막힘 (D3).
+  setEndpoint(taskId: string, role: Role, endpoint: string): { ok: boolean; status: number; error?: string } {
+    const task = this.taskById(taskId);
+    if (!task) return { ok: false, status: 404, error: "unknown task" };
+    if (!(endpoint in this.config.endpoints)) return { ok: false, status: 400, error: "unknown endpoint" };
+    const assignedKey = task.assigned[role];
+    const st = assignedKey ? (this.sessions.stateOf(assignedKey) ?? "detached") : null;
+    if (st !== null && st !== "detached") return { ok: false, status: 409, error: `session is ${st}` };
+    const from = this.effectiveEndpoint(task, role);
+    // ① 선택 저장 → ② 이벤트·저장·broadcast → ③ 대기 중 launch 항목이 있으면 제거 후 새 엔드포인트 기준으로 재전달 (D5).
+    task.endpoints = { ...task.endpoints, [role]: endpoint };
+    this.store.appendTaskEvent(task.id, { type: "endpoint", role, endpoint, from });
+    this.store.save();
+    this.broadcastTask(task);
+    for (const ep of Object.keys(this.localQueue)) {
+      const i = this.localQueue[ep].findIndex((w) => w.taskId === task.id && w.role === role && w.kind === "launch");
+      if (i >= 0) {
+        const item = this.localQueue[ep][i];
+        this.localQueue[ep].splice(i, 1);
+        this.deliverLaunch(task, role, item.text, item.resumeSessionId, item.relaunch);
+        break;
+      }
+    }
     return { ok: true, status: 200 };
   }
 

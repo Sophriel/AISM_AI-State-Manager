@@ -2796,3 +2796,199 @@ describe("newTask folder 지정 (N2 — 기존 plan 폴더로 시작)", () => {
     env.cleanup();
   });
 });
+
+describe("setEndpoint (역할별 엔드포인트 선택)", () => {
+  const localEndpoints = { cloud: {}, local: { ANTHROPIC_BASE_URL: "http://x" } };
+
+  it("(a) 작업 없음 404, 설정에 없는 endpoint 400", () => {
+    const env = setup({ endpoints: localEndpoints });
+    const { orchestrator, store, folder } = env;
+    expect(orchestrator.setEndpoint("t-none", "coder", "cloud")).toEqual({
+      ok: false,
+      status: 404,
+      error: "unknown task",
+    });
+    const task = seedTask(store, { folder });
+    expect(orchestrator.setEndpoint(task.id, "coder", "nope")).toEqual({
+      ok: false,
+      status: 400,
+      error: "unknown endpoint",
+    });
+    env.cleanup();
+  });
+
+  it("(b) working·parked·idle·unbound 409, null·detached 200", () => {
+    const env = setup({ endpoints: localEndpoints });
+    const { orchestrator, store, sessions, folder } = env;
+    const task = seedTask(store, { folder });
+
+    // null — 배정 없음 → 200.
+    expect(orchestrator.setEndpoint(task.id, "coder", "cloud")).toEqual({ ok: true, status: 200 });
+    // detached — 세션 키는 있는데 상태 모름 → 200.
+    task.assigned.coder = "coder-gone";
+    expect(orchestrator.setEndpoint(task.id, "coder", "local")).toEqual({ ok: true, status: 200 });
+
+    // working·parked·idle → 409.
+    addSession(store, "coder-1", "coder", task, folder);
+    sessions.register("coder-1", "working");
+    task.assigned.coder = "coder-1";
+    expect(orchestrator.setEndpoint(task.id, "coder", "cloud")).toEqual({
+      ok: false,
+      status: 409,
+      error: "session is working",
+    });
+    sessions.register("coder-1", "parked");
+    expect(orchestrator.setEndpoint(task.id, "coder", "cloud")).toEqual({
+      ok: false,
+      status: 409,
+      error: "session is parked",
+    });
+    sessions.register("coder-1", "idle");
+    expect(orchestrator.setEndpoint(task.id, "coder", "cloud")).toEqual({
+      ok: false,
+      status: 409,
+      error: "session is idle",
+    });
+
+    // unbound — PLANNER folder null.
+    const task2 = seedTask(store, {});
+    addSession(store, "planner-1", "planner", task2, null);
+    sessions.register("planner-1", "unbound");
+    task2.assigned.planner = "planner-1";
+    expect(orchestrator.setEndpoint(task2.id, "planner", "local")).toEqual({
+      ok: false,
+      status: 409,
+      error: "session is unbound",
+    });
+    env.cleanup();
+  });
+
+  it("(c) 성공 — endpoint 이벤트 {role, endpoint, from} 기록, getState().endpoints·endpointNames, 기본값과 같은 값도 저장", () => {
+    const env = setup({ endpoints: localEndpoints });
+    const { orchestrator, store, folder } = env;
+    const task = seedTask(store, { folder });
+
+    const r = orchestrator.setEndpoint(task.id, "coder", "cloud");
+    expect(r).toEqual({ ok: true, status: 200 });
+    expect(task.endpoints).toEqual({ coder: "cloud" });
+    const ev = store.readTaskEvents(task.id).filter((e) => e.type === "endpoint");
+    expect(ev).toHaveLength(1);
+    expect(ev[0]).toMatchObject({ type: "endpoint", role: "coder", endpoint: "cloud", from: "local" });
+
+    const st = orchestrator.getState(task.id);
+    expect(st.endpoints).toEqual({ planner: "cloud", verifier: "local", coder: "cloud" });
+    expect(st.endpointNames).toEqual(["cloud", "local"]);
+
+    // 기본값과 같은 값도 명시 선택으로 저장.
+    expect(orchestrator.setEndpoint(task.id, "verifier", "local")).toEqual({ ok: true, status: 200 });
+    expect(task.endpoints).toEqual({ coder: "cloud", verifier: "local" });
+    env.cleanup();
+  });
+
+  it("(d) 자동 launch·relaunch(new)·relaunch(resume)가 선택 엔드포인트를 받음 (가짜 launch 인자)", () => {
+    const env = setup({ endpoints: localEndpoints });
+    const { orchestrator, store, sessions, taskDir, folder, launchCalls } = env;
+    const task = seedTask(store, { folder, assigned: { planner: "planner-1", verifier: null, coder: null } });
+    addSession(store, "planner-1", "planner", task, folder);
+    sessions.register("planner-1", "working");
+    fs.mkdirSync(taskDir, { recursive: true });
+    fs.writeFileSync(path.join(taskDir, "plan-v1.md"), "Status: IN_REVIEW\n"); // verify 없음 → VERIFIER launch
+    task.endpoints = { verifier: "cloud" };
+
+    // 자동 launch — PLANNER Stop → VERIFIER launch(지시)가 선택 엔드포인트로.
+    orchestrator.handleStop("planner-1", { session_id: "p1" }, () => {}, () => {});
+    expect(task.assigned.verifier).toBeTruthy();
+    expect(launchCalls.at(-1)?.endpoint).toBe("cloud");
+
+    // relaunch(new) — working 허용, 선택 엔드포인트로.
+    const r1 = orchestrator.relaunch(task.id, "verifier", "new");
+    expect(r1).toEqual({ ok: true, status: 200 });
+    expect(launchCalls.at(-1)?.endpoint).toBe("cloud");
+
+    // relaunch(resume) — 새 세션의 activeSessionId로 이어서, 선택 엔드포인트로.
+    const key2 = task.assigned.verifier!;
+    store.state.sessions[key2].activeSessionId = "v-resume";
+    const r2 = orchestrator.relaunch(task.id, "verifier", "resume");
+    expect(r2).toEqual({ ok: true, status: 200 });
+    expect(launchCalls.at(-1)?.endpoint).toBe("cloud");
+    expect(launchCalls.at(-1)?.resumeSessionId).toBe("v-resume");
+    env.cleanup();
+  });
+
+  it("(e) CODER를 cloud로 바꾸면 로컬 사용 중이어도 launch가 대기 없이 실행", () => {
+    const env = setup({ endpoints: localEndpoints });
+    const { orchestrator, store, sessions, folder, launchCalls } = env;
+    const taskA = seedTask(store, { folder, assigned: { planner: null, verifier: null, coder: "coder-1" } });
+    addSession(store, "coder-1", "coder", taskA, folder);
+    sessions.register("coder-1", "working");
+    internal(env.orchestrator).localBusy["local"] = "coder-1";
+
+    const taskB = seedTask(store, { folder, assigned: { planner: null, verifier: null, coder: null } });
+    expect(orchestrator.setEndpoint(taskB.id, "coder", "cloud")).toEqual({ ok: true, status: 200 });
+    taskB.undelivered.push({ role: "coder", text: "지시" });
+    const before = launchCalls.length;
+    const r = orchestrator.relaunch(taskB.id, "coder", "new");
+    expect(r).toEqual({ ok: true, status: 200 }); // queued 아님
+    expect(launchCalls).toHaveLength(before + 1);
+    expect(launchCalls.at(-1)?.endpoint).toBe("cloud");
+    env.cleanup();
+  });
+
+  it("(f) 다른 작업에서 VERIFIER를 local로 바꾸면 같은 local 대기열을 공유해 queued", () => {
+    const env = setup({ endpoints: localEndpoints });
+    const { orchestrator, store, sessions, folder } = env;
+    const taskA = seedTask(store, { folder, assigned: { planner: null, verifier: "verifier-1", coder: null } });
+    addSession(store, "verifier-1", "verifier", taskA, folder);
+    sessions.register("verifier-1", "working");
+    internal(env.orchestrator).localBusy["local"] = "verifier-1";
+
+    const taskB = seedTask(store, { folder, assigned: { planner: null, verifier: null, coder: null } });
+    expect(orchestrator.setEndpoint(taskB.id, "verifier", "local")).toEqual({ ok: true, status: 200 });
+    taskB.undelivered.push({ role: "verifier", text: "지시" });
+    const r = orchestrator.relaunch(taskB.id, "verifier", "new");
+    expect(r).toEqual({ ok: true, status: 200, queued: true });
+    const q = internal(env.orchestrator).localQueue["local"] ?? [];
+    expect(q.filter((w) => w.taskId === taskB.id)).toHaveLength(1);
+    env.cleanup();
+  });
+
+  it("(g) queued launch 항목이 있는 역할을 cloud로 바꾸면 즉시 launch되고 대기열에서 사라짐", () => {
+    const env = setup({ endpoints: localEndpoints });
+    const { orchestrator, store, sessions, folder, launchCalls } = env;
+    const taskA = seedTask(store, { folder, assigned: { planner: null, verifier: "verifier-1", coder: null } });
+    addSession(store, "verifier-1", "verifier", taskA, folder);
+    sessions.register("verifier-1", "working");
+    internal(env.orchestrator).localBusy["local"] = "verifier-1";
+
+    const taskB = seedTask(store, { folder, assigned: { planner: null, verifier: null, coder: null } });
+    taskB.undelivered.push({ role: "verifier", text: "지시" });
+    expect(orchestrator.relaunch(taskB.id, "verifier", "new")).toEqual({ ok: true, status: 200, queued: true });
+    const q = internal(env.orchestrator).localQueue["local"] ?? [];
+    expect(q.filter((w) => w.taskId === taskB.id)).toHaveLength(1);
+
+    const before = launchCalls.length;
+    expect(orchestrator.setEndpoint(taskB.id, "verifier", "cloud")).toEqual({ ok: true, status: 200 });
+    expect(launchCalls).toHaveLength(before + 1);
+    expect(launchCalls.at(-1)?.endpoint).toBe("cloud");
+    expect(launchCalls.at(-1)?.firstInstruction).toBe("지시");
+    expect((internal(env.orchestrator).localQueue["local"] ?? []).filter((w) => w.taskId === taskB.id)).toHaveLength(0);
+    env.cleanup();
+  });
+
+  it("(h) 상태에 설정에 없는 이름이 남아 있으면 기본값으로 launch", () => {
+    const env = setup({ endpoints: localEndpoints });
+    const { orchestrator, store, sessions, folder, launchCalls } = env;
+    const task = seedTask(store, { folder, assigned: { planner: null, verifier: null, coder: "coder-1" } });
+    addSession(store, "coder-1", "coder", task, folder);
+    sessions.register("coder-1", "detached");
+    task.endpoints = { coder: "gone" }; // 설정에 없는 이름
+
+    const before = launchCalls.length;
+    const r = orchestrator.relaunch(task.id, "coder", "new");
+    expect(r).toEqual({ ok: true, status: 200 });
+    expect(launchCalls).toHaveLength(before + 1);
+    expect(launchCalls.at(-1)?.endpoint).toBe("local"); // 역할 기본값
+    expect(orchestrator.getState(task.id).endpoints?.coder).toBe("local");
+    env.cleanup();
+  });
+});

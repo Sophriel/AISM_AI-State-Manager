@@ -28,6 +28,7 @@ export interface LaunchOptions {
   hex?: string; // 4자리 hex, 기본 랜덤
   resumeSessionId?: string; // 있으면 --resume <id> + "AISM resume: <folder>" (S-9)
   firstInstruction?: string; // 있으면 AISM context 헤더에 "First instruction: …" (M2 polish §3 B)
+  endpoint?: string; // 있으면 그 엔드포인트 묶음, 없으면(또는 설정에 없으면) 역할 설정 기본값
 }
 
 const toSlash = (p: string): string => p.replace(/\\/g, "/");
@@ -47,7 +48,11 @@ export function launchSession(opts: LaunchOptions): { sessionKey: string; dir: s
   const projectCfg = config.projects[project];
   if (!projectCfg) throw new Error(`unknown project: ${project}`);
   const roleCfg = config.roles[role];
-  const endpoint = config.endpoints[roleCfg.endpoint] ?? {};
+  // 엔드포인트 지정 — 있으면 그 묶음, 설정에 없는 이름이면 역할 설정 기본값 (방어).
+  const endpoint =
+    opts.endpoint !== undefined && opts.endpoint in config.endpoints
+      ? config.endpoints[opts.endpoint]
+      : config.endpoints[roleCfg.endpoint];
 
   const sessionKey = makeSessionKey(role, now, hex);
   const dir = path.join(aismRoot, "state", "sessions", sessionKey);

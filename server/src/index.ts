@@ -1,5 +1,5 @@
 // T12 — HTTP 서버. loadConfig → Store.load() → 저장된 세션 detached 초기화 → listen.
-// 라우트: /hook/stop(long-poll), /api/state, /api/events(SSE), /api/tasks/{new,relaunch,close}, /api/timeline/clear, /api/projects{,/remove}, /api/ui/window, 정적 서빙.
+// 라우트: /hook/stop(long-poll), /api/state, /api/events(SSE), /api/tasks/{new,relaunch,endpoint,close}, /api/timeline/clear, /api/projects{,/remove}, /api/ui/window, 정적 서빙.
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import Fastify from "fastify";
@@ -103,6 +103,21 @@ async function main(): Promise<void> {
       return reply.code(400).send({ error: "invalid mode" });
     const result = orchestrator.relaunch(task, role, (mode as "new" | "resume" | undefined) ?? "new");
     return reply.code(result.status).send(result.ok ? { ok: true, ...(result.queued ? { queued: true } : {}) } : { error: result.error });
+  });
+
+  // POST /api/tasks/endpoint — 작업 단위 엔드포인트(모델) 선택. 세션 창이 열려 있으면 409.
+  app.post("/api/tasks/endpoint", async (request, reply) => {
+    const { task, role, endpoint } = (request.body ?? {}) as {
+      task?: string;
+      role?: "planner" | "verifier" | "coder";
+      endpoint?: string;
+    };
+    if (typeof task !== "string" || typeof endpoint !== "string")
+      return reply.code(400).send({ error: "bad request" });
+    if (role !== "planner" && role !== "verifier" && role !== "coder")
+      return reply.code(400).send({ error: "bad request" });
+    const result = orchestrator.setEndpoint(task, role, endpoint);
+    return reply.code(result.status).send(result.ok ? { ok: true } : { error: result.error });
   });
 
   app.post("/api/tasks/close", async (request, reply) => {
