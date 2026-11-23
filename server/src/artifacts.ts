@@ -141,6 +141,22 @@ export function emptyTodoSnapshot(): TodoSnapshot {
   return { latestN: null, verifyExists: false, verdict: null, checklistExists: false, commitPlanExists: false };
 }
 
+// plansDir의 직속 폴더 중 plan-v1.md가 있는 폴더명 목록 (정렬). 읽기 실패면 [].
+export function listPlanFolders(plansDir: string): string[] {
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(plansDir, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+  const result: string[] = [];
+  for (const e of entries) {
+    if (!e.isDirectory()) continue;
+    if (fs.existsSync(path.join(plansDir, e.name, "plan-v1.md"))) result.push(e.name);
+  }
+  return result.sort();
+}
+
 // plansDir의 직속 폴더 중 plan-v1.md 생성 시각(birthtimeMs)이 sinceMs 이후인 폴더명 목록.
 export function findNewPlanV1(plansDir: string, sinceMs: number): string[] {
   let entries: fs.Dirent[];

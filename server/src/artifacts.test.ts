@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, it, expect } from "vitest";
-import { readSnapshot, readTodoSnapshot, findNewPlanV1 } from "./artifacts.js";
+import { readSnapshot, readTodoSnapshot, findNewPlanV1, listPlanFolders } from "./artifacts.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url)); // server/src
 const fixtures = path.join(here, "..", "test", "fixtures"); // server/test/fixtures
@@ -184,5 +184,21 @@ describe("findNewPlanV1", () => {
 
   it("plansDir가 없으면 빈 목록", () => {
     expect(findNewPlanV1(path.join(os.tmpdir(), "aism-no-such-dir-xyz"), 0)).toEqual([]);
+  });
+});
+
+describe("listPlanFolders", () => {
+  it("plan-v1.md가 있는 폴더만 정렬해 반환", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "aism-plans-"));
+    for (const name of ["261111-beta", "261111-alpha"]) {
+      fs.mkdirSync(path.join(dir, name));
+      fs.writeFileSync(path.join(dir, name, "plan-v1.md"), "Status: DRAFT\n");
+    }
+    fs.mkdirSync(path.join(dir, "261111-gamma")); // plan-v1.md 없음
+    expect(listPlanFolders(dir)).toEqual(["261111-alpha", "261111-beta"]);
+  });
+
+  it("plansDir가 없으면 빈 목록", () => {
+    expect(listPlanFolders(path.join(os.tmpdir(), "aism-no-such-dir-xyz"))).toEqual([]);
   });
 });

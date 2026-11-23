@@ -82,9 +82,11 @@ async function main(): Promise<void> {
   });
 
   app.post("/api/tasks/new", async (request, reply) => {
-    const { project } = (request.body ?? {}) as { project?: string };
+    const { project, folder } = (request.body ?? {}) as { project?: string; folder?: unknown };
     if (!project) return reply.code(400).send({ error: "missing project" });
-    const result = orchestrator.newTask(project);
+    if (folder !== undefined && typeof folder !== "string")
+      return reply.code(400).send({ error: "invalid folder" });
+    const result = orchestrator.newTask(project, folder);
     return reply.code(result.status).send(result.ok ? { ok: true, taskId: result.taskId } : { error: result.error });
   });
 
@@ -132,6 +134,13 @@ async function main(): Promise<void> {
   app.post("/api/projects/remove", async (request, reply) => {
     const r = orchestrator.removeProject(request.body);
     return reply.code(r.status).send(r.payload);
+  });
+
+  // GET /api/projects/:project/folders — 기존 plan 폴더 후보 (plan-v1.md 있음, 미바인딩).
+  app.get("/api/projects/:project/folders", async (request, reply) => {
+    const { project } = request.params as { project: string };
+    const r = orchestrator.availableFolders(project);
+    return reply.code(r.status).send(r.ok ? { folders: r.folders } : { error: r.error });
   });
 
   app.post("/api/ui/window", async (request, reply) => {

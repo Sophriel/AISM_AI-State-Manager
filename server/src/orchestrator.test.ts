@@ -2686,3 +2686,113 @@ describe("T6 — 표시 queued·queue·commit-done (S-4)", () => {
     env.cleanup();
   });
 });
+
+describe("availableFolders (N2 — 기존 plan 폴더로 시작)", () => {
+  it("plan-v1.md가 있는 폴더를 정렬해 반환하고, 바인딩된 폴더는 제외", () => {
+    const env = setup();
+    const { orchestrator, store, plansDir } = env;
+    for (const name of ["261111-alpha", "261111-beta"]) {
+      fs.mkdirSync(path.join(plansDir, name), { recursive: true });
+      fs.writeFileSync(path.join(plansDir, name, "plan-v1.md"), "Status: DRAFT\n");
+    }
+    fs.mkdirSync(path.join(plansDir, "261111-gamma"), { recursive: true }); // plan-v1.md 없음
+    expect(orchestrator.availableFolders("EWE")).toEqual({
+      ok: true,
+      status: 200,
+      folders: ["261111-alpha", "261111-beta"],
+    });
+
+    // 다른 작업이 alpha를 바인딩 → 목록에서 제외.
+    seedTask(store, { folder: "261111-alpha" });
+    expect(orchestrator.availableFolders("EWE")).toEqual({ ok: true, status: 200, folders: ["261111-beta"] });
+    env.cleanup();
+  });
+
+  it("알 수 없는 project → 404", () => {
+    const env = setup();
+    expect(env.orchestrator.availableFolders("nope")).toEqual({
+      ok: false,
+      status: 404,
+      error: "unknown project",
+    });
+    env.cleanup();
+  });
+});
+
+describe("newTask folder 지정 (N2 — 기존 plan 폴더로 시작)", () => {
+  function makeFolder(env: ReturnType<typeof setup>, name: string): void {
+    fs.mkdirSync(path.join(env.plansDir, name), { recursive: true });
+    fs.writeFileSync(path.join(env.plansDir, name, "plan-v1.md"), "Status: DRAFT\n");
+  }
+
+  it("바로 바인딩 — task.folder·세션 working·bind 이벤트·launch 인자 folder", () => {
+    const env = setup();
+    const { orchestrator, store, sessions, launchCalls } = env;
+    makeFolder(env, "261111-alpha");
+
+    const r = orchestrator.newTask("EWE", "261111-alpha");
+    expect(r.ok).toBe(true);
+    expect(r.status).toBe(200);
+    const task = store.state.tasks[r.taskId!];
+    expect(task.folder).toBe("261111-alpha");
+    const key = task.assigned.planner!;
+    expect(sessions.stateOf(key)).toBe("working");
+    expect(store.state.sessions[key].folder).toBe("261111-alpha");
+    const bindEvents = store.readTaskEvents(task.id).filter((e) => e.type === "bind");
+    expect(bindEvents).toHaveLength(1);
+    expect(bindEvents[0]).toMatchObject({ type: "bind", folder: "261111-alpha", sessionKey: key });
+    expect(launchCalls.at(-1)?.folder).toBe("261111-alpha");
+    env.cleanup();
+  });
+
+  it("다른 작업이 바인딩한 폴더 → 409 folder is bound", () => {
+    const env = setup();
+    const { orchestrator, store } = env;
+    makeFolder(env, "261111-alpha");
+    seedTask(store, { folder: "261111-alpha" });
+    expect(orchestrator.newTask("EWE", "261111-alpha")).toEqual({
+      ok: false,
+      status: 409,
+      error: "folder is bound",
+    });
+    env.cleanup();
+  });
+
+  it("plan-v1.md 없는 폴더 → 404 unknown folder", () => {
+    const env = setup();
+    fs.mkdirSync(path.join(env.plansDir, "261111-empty"), { recursive: true });
+    expect(env.orchestrator.newTask("EWE", "261111-empty")).toEqual({
+      ok: false,
+      status: 404,
+      error: "unknown folder",
+    });
+    env.cleanup();
+  });
+
+  it("잘못된 폴더명 → 400 invalid folder", () => {
+    const env = setup();
+    expect(env.orchestrator.newTask("EWE", "..")).toEqual({ ok: false, status: 400, error: "invalid folder" });
+    expect(env.orchestrator.newTask("EWE", "a\\b")).toEqual({ ok: false, status: 400, error: "invalid folder" });
+    env.cleanup();
+  });
+
+  it("미바인딩 작업이 있어도 folder 지정 시작은 200 (D10 검사 없음)", () => {
+    const env = setup();
+    const { orchestrator, store } = env;
+    makeFolder(env, "261111-alpha");
+    seedTask(store, {}); // folder null — 미바인딩 작업
+    const r = orchestrator.newTask("EWE", "261111-alpha");
+    expect(r.ok).toBe(true);
+    expect(r.status).toBe(200);
+    expect(store.state.tasks[r.taskId!].folder).toBe("261111-alpha");
+    env.cleanup();
+  });
+
+  it("folder 없음 — D10 409 유지", () => {
+    const env = setup();
+    const { orchestrator, store } = env;
+    seedTask(store, {}); // folder null
+    expect(orchestrator.newTask("EWE")).toEqual({ ok: false, status: 409, error: "project has a new task" });
+    env.cleanup();
+  });
+});

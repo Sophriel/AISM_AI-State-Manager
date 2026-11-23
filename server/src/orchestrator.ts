@@ -13,6 +13,7 @@ import {
   findNewPlanV1 as defaultFindNewPlanV1,
   readTodoSnapshot as defaultReadTodoSnapshot,
   emptyTodoSnapshot,
+  listPlanFolders,
 } from "./artifacts.js";
 import type { Action, PeerView, Role, Reply } from "./machine.js";
 import { evaluate, instructionApproveAndTodo, instructionImplement } from "./machine.js";
@@ -192,11 +193,7 @@ export class Orchestrator {
     let newPlanFolders: string[] = [];
     if (role === "planner" && task.folder === null) {
       // 같은 프로젝트 다른 작업의 folder는 제외 (T3 — 각 작업은 자기 폴더만).
-      const otherFolders = new Set(
-        Object.values(this.store.state.tasks)
-          .filter((t) => t.project === task.project && t.id !== task.id && t.folder !== null)
-          .map((t) => t.folder as string),
-      );
+      const otherFolders = this.boundFolders(task.project, task.id);
       const found = this.findNewPlanV1(this.plansDir(task.project), task.startedAt).filter(
         (f) => !otherFolders.has(f),
       );
@@ -238,6 +235,15 @@ export class Orchestrator {
 
   private taskById(id: string): Task | null {
     return this.store.state.tasks[id] ?? null;
+  }
+
+  // 같은 프로젝트에서 바인딩한 폴더 Set (exceptTaskId 작업 제외).
+  private boundFolders(project: string, exceptTaskId?: string): Set<string> {
+    return new Set(
+      Object.values(this.store.state.tasks)
+        .filter((t) => t.project === project && t.id !== exceptTaskId && t.folder !== null)
+        .map((t) => t.folder as string),
+    );
   }
 
   // 그 작업에 배정된 역할별 세션 뷰 (W4).
@@ -677,10 +683,27 @@ export class Orchestrator {
     return null;
   }
 
-  // POST /api/tasks/new — 같은 프로젝트에 미바인딩(folder null) 작업이 있으면 409.
-  newTask(project: string): { ok: boolean; status: number; error?: string; taskId?: string } {
-    if (Object.values(this.store.state.tasks).some((t) => t.project === project && t.folder === null))
-      return { ok: false, status: 409, error: "project has a new task" };
+  // GET /api/projects/:project/folders — plan-v1.md가 있고 같은 프로젝트 다른 작업에 바인딩되지 않은 폴더.
+  availableFolders(project: string): { ok: boolean; status: number; error?: string; folders?: string[] } {
+    if (!this.config.projects[project]) return { ok: false, status: 404, error: "unknown project" };
+    const bound = this.boundFolders(project);
+    const folders = listPlanFolders(this.plansDir(project)).filter((f) => !bound.has(f));
+    return { ok: true, status: 200, folders };
+  }
+
+  // POST /api/tasks/new — folder 없으면 같은 프로젝트에 미바인딩(folder null) 작업이 있으면 409.
+  // folder 있으면 그 폴더에 바로 바인딩해 시작 (N2) — D10 검사는 하지 않는다.
+  newTask(project: string, folder?: string): { ok: boolean; status: number; error?: string; taskId?: string } {
+    if (folder === undefined) {
+      if (Object.values(this.store.state.tasks).some((t) => t.project === project && t.folder === null))
+        return { ok: false, status: 409, error: "project has a new task" };
+    } else {
+      if (!this.config.projects[project]) return { ok: false, status: 404, error: "unknown project" };
+      if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(folder)) return { ok: false, status: 400, error: "invalid folder" };
+      if (!fs.existsSync(path.join(this.plansDir(project), folder, "plan-v1.md")))
+        return { ok: false, status: 404, error: "unknown folder" };
+      if (this.boundFolders(project).has(folder)) return { ok: false, status: 409, error: "folder is bound" };
+    }
     if (!this.config.projects[project]) return { ok: false, status: 404, error: "unknown project" };
     this.refreshProjectInfo();
     const id = makeTaskId(new Date(), crypto.randomBytes(2).toString("hex"));
@@ -690,13 +713,14 @@ export class Orchestrator {
       config: this.config,
       project,
       role: "planner",
-      folder: null,
+      folder: folder ?? null,
       aismRoot: this.aismRoot,
       store: this.store,
       task: id,
     });
-    this.sessions.register(result.sessionKey, "unbound");
+    this.sessions.register(result.sessionKey, folder !== undefined ? "working" : "unbound");
     this.assign(task, "planner", result.sessionKey);
+    if (folder !== undefined) this.bindTask(task, folder, result.sessionKey);
     this.store.appendSessionEvent(result.sessionKey, { type: "launch", role: "planner", sessionKey: result.sessionKey });
     this.store.save();
     this.broadcastTask(task);
