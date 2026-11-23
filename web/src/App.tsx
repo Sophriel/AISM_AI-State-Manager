@@ -237,12 +237,7 @@ function App() {
               </div>
             ))}
             <div className="control-row">
-              <button type="button" onClick={handleClose} disabled={busy}>
-                작업 종료
-              </button>
-            </div>
-            {state?.task && state.projectInfo[state.task.project]?.git != null && (
-              <div className="control-row">
+              {state?.task && state.projectInfo[state.task.project]?.git != null && (
                 <button
                   type="button"
                   onClick={handleCommitDone}
@@ -250,8 +245,11 @@ function App() {
                 >
                   커밋 완료
                 </button>
-              </div>
-            )}
+              )}
+              <button type="button" onClick={handleClose} disabled={busy}>
+                작업 종료
+              </button>
+            </div>
           </div>
 
           <Timeline events={state?.events ?? []} onClear={handleClearTimeline} disabled={busy} />
