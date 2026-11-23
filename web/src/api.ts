@@ -42,7 +42,7 @@ export interface Task {
   folder: string | null;
   startedAt: number;
   assigned: { planner: string | null; verifier: string | null; coder: string | null };
-  commitDone: boolean;
+  commitDoneT: number | null;
 }
 
 export type PendingAction =
@@ -107,6 +107,11 @@ export interface NotifyPayload {
   level: "info" | "warn";
   message: string;
   copyText?: string;
+}
+
+// 최신 todo를 커밋 완료했는지 — 서버 orchestrator DONE 판정과 같은 기준 (plan-v5 P5-e).
+export function isCommitDone(state: State | null): boolean {
+  return state?.task != null && state.todo?.latestN != null && state.task.commitDoneT === state.todo.latestN;
 }
 
 export async function fetchState(taskId: string | null): Promise<State> {

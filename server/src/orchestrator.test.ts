@@ -131,7 +131,7 @@ function seedTask(store: Store, partial?: Partial<Task>): Task {
     assigned: { planner: null, verifier: null, coder: null },
     record: { notified: [], consecutiveBlocks: {}, instructed: [] },
     undelivered: [],
-    commitDone: false,
+    commitDoneT: null,
     ...partial,
   };
   store.state.tasks[id] = task;
@@ -2280,7 +2280,7 @@ describe("T4 — 프로젝트별 코딩 잠금 (S-4)", () => {
 
     const r = orchestrator.commitDone(taskA.id);
     expect(r).toEqual({ ok: true, status: 200 });
-    expect(taskA.commitDone).toBe(true);
+    expect(taskA.commitDoneT).toBe(1);
     expect(store.state.codingLocks["EWE"]?.task).toBe(taskB.id);
     expect(replyB).toEqual({ action: "block", reason: instructionImplement(1) });
     expect(sessions.stateOf("coder-2")).toBe("working");
@@ -2388,21 +2388,32 @@ describe("T4 — 프로젝트별 코딩 잠금 (S-4)", () => {
     env.cleanup();
   });
 
-  it("commitDone — 404·409·중복 200", () => {
+  it("commitDone — 404·409(git 아님)·409(no todo)·중복 200", () => {
     const env = setup(); // git 아님
     const { orchestrator, store } = env;
     const taskA = seedTask(store);
     expect(orchestrator.commitDone("nope")).toEqual({ ok: false, status: 404, error: "unknown task" });
     expect(orchestrator.commitDone(taskA.id)).toEqual({ ok: false, status: 409, error: "not a git project" });
 
+    // git이지만 todo 없음(folder null) → 409 no todo, commitDoneT는 그대로 null.
     const env2 = setup({ gitInfo: () => ({ branch: "main" }) });
     const taskB = seedTask(env2.store);
-    expect(env2.orchestrator.commitDone(taskB.id)).toEqual({ ok: true, status: 200 });
-    expect(taskB.commitDone).toBe(true);
-    expect(env2.orchestrator.commitDone(taskB.id)).toEqual({ ok: true, status: 200 }); // 중복
+    expect(env2.orchestrator.commitDone(taskB.id)).toEqual({ ok: false, status: 409, error: "no todo" });
+    expect(taskB.commitDoneT).toBeNull();
+
+    // git + todo 있음 → 200·commitDoneT = 최신 todo 번호(1), 중복 호출도 200.
+    const env3 = setup({ gitInfo: () => ({ branch: "main" }) });
+    const { store: store3, taskDir: taskDir3, folder: folder3 } = env3;
+    const taskC = seedTask(store3, { folder: folder3 });
+    fs.mkdirSync(taskDir3, { recursive: true });
+    fs.writeFileSync(path.join(taskDir3, "todo-v1.md"), "- [ ] T1\n");
+    expect(env3.orchestrator.commitDone(taskC.id)).toEqual({ ok: true, status: 200 });
+    expect(taskC.commitDoneT).toBe(1);
+    expect(env3.orchestrator.commitDone(taskC.id)).toEqual({ ok: true, status: 200 }); // 중복
 
     env.cleanup();
     env2.cleanup();
+    env3.cleanup();
   });
 
   it("잠금 받은 B가 로컬 사용 중이면 로컬 대기·잠금은 B", () => {

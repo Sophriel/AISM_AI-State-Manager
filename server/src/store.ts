@@ -13,7 +13,7 @@ export interface Task {
   assigned: { planner: string | null; verifier: string | null; coder: string | null };
   record: TaskRecord;
   undelivered: Undelivered[];
-  commitDone: boolean;
+  commitDoneT: number | null; // 커밋 완료를 누른 시점의 최신 todo 번호. 0 = 이전 형식(번호 모름), null = 없음
   endpoints?: Partial<Record<Role, string>>; // 사용자가 고른 역할별 엔드포인트 (없으면 설정 기본값)
 }
 
@@ -89,7 +89,7 @@ export function newTask(id: string, project: string, startedAt: number): Task {
     assigned: { planner: null, verifier: null, coder: null },
     record: { notified: [], consecutiveBlocks: {}, instructed: [] },
     undelivered: [],
-    commitDone: false,
+    commitDoneT: null,
   };
 }
 
@@ -122,7 +122,7 @@ export function isCurrentState(x: unknown): x is State {
   for (const [k, t] of Object.entries(tasks)) {
     if (!isObj(t)) return false;
     const tKeys = Object.keys(t);
-    const expectedT = ["id", "project", "folder", "startedAt", "assigned", "record", "undelivered", "commitDone"];
+    const expectedT = ["id", "project", "folder", "startedAt", "assigned", "record", "undelivered", "commitDoneT"];
     if (tKeys.length !== expectedT.length && tKeys.length !== expectedT.length + 1) return false;
     if (!expectedT.every((key) => tKeys.includes(key))) return false;
     if (tKeys.length === expectedT.length + 1) {
@@ -174,7 +174,7 @@ export function isCurrentState(x: unknown): x is State {
       if (!["planner", "verifier", "coder"].includes(item.role as string)) return false;
       if (typeof item.text !== "string") return false;
     }
-    if (typeof t.commitDone !== "boolean") return false;
+    if (t.commitDoneT !== null && (typeof t.commitDoneT !== "number" || !Number.isInteger(t.commitDoneT) || t.commitDoneT < 0)) return false;
   }
 
   const s = x.sessions;
@@ -232,6 +232,20 @@ export function isCurrentState(x: unknown): x is State {
   return true;
 }
 
+// 이전 형식 커밋 완료(commitDone) → commitDoneT로 변환 (plan-v5 P5-b). true→0, false→null, 이미 commitDoneT면 그대로. 예외 없음.
+export function migrateCommitDone(p: unknown): void {
+  if (!isObj(p)) return;
+  const tasks = p.tasks;
+  if (!isObj(tasks)) return;
+  for (const t of Object.values(tasks)) {
+    if (!isObj(t)) continue;
+    if ("commitDone" in t && !("commitDoneT" in t)) {
+      t.commitDoneT = t.commitDone === true ? 0 : null;
+      delete t.commitDone;
+    }
+  }
+}
+
 export class Store {
   private dir: string;
   private statePath: string;
@@ -259,6 +273,7 @@ export class Store {
     } catch {
       return emptyState(); // 파싱 실패 — 경고 없음.
     }
+    migrateCommitDone(p);
     if (!isCurrentState(p)) {
       if (!this.formatWarned) {
         console.warn("state.json이 현재 형식과 맞지 않아 무시했습니다 — 빈 상태로 시작합니다");

@@ -116,6 +116,15 @@ export class Orchestrator {
       if (this.sessions.stateOf(k) === "detached") this.releaseLocal(k);
     };
     this.refreshProjectInfo();
+    // 이전 형식 커밋 완료(0) → 그 작업의 최신 todo 번호 (plan-v5 P5-c).
+    let commitMigrated = false;
+    for (const t of Object.values(this.store.state.tasks)) {
+      if (t.commitDoneT === 0) {
+        t.commitDoneT = t.folder !== null ? this.todoSnapshot(t.project, t.folder).latestN : null;
+        commitMigrated = true;
+      }
+    }
+    if (commitMigrated) this.store.save();
     // 코딩 잠금 — 작업이 없는 잠금 삭제(drain 안 함), 그 다음 잠금이 없는 대기 프로젝트 drain (S-4).
     let lockChanged = false;
     for (const project of Object.keys(this.store.state.codingLocks)) {
@@ -486,8 +495,10 @@ export class Orchestrator {
     const task = this.taskById(taskId);
     if (!task) return { ok: false, status: 404, error: "unknown task" };
     if (this.projectInfo[task.project]?.git == null) return { ok: false, status: 409, error: "not a git project" };
-    if (task.commitDone) return { ok: true, status: 200 };
-    task.commitDone = true;
+    const T = task.folder !== null ? this.todoSnapshot(task.project, task.folder).latestN : null;
+    if (T === null) return { ok: false, status: 409, error: "no todo" };
+    if (task.commitDoneT === T) return { ok: true, status: 200 };
+    task.commitDoneT = T;
     this.releaseCoding(task.project, task.id);
     this.store.save();
     this.broadcastTask(task);
@@ -688,7 +699,7 @@ export class Orchestrator {
       const T = todo.latestN;
       if (T !== null) {
         const isGit = this.projectInfo[task.project]?.git != null;
-        const commit = !isGit || !todo.commitPlanExists ? "none" : task.commitDone ? "done" : "planned";
+        const commit = !isGit || !todo.commitPlanExists ? "none" : task.commitDoneT === T ? "done" : "planned";
         if (todo.checklistExists) return { kind: "done", t: T, commit };
         if (commit === "planned") return { kind: "commit", t: T }; // commitDone이면 commit kind 행 건너뜀.
       }

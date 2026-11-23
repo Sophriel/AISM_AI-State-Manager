@@ -1,5 +1,6 @@
 // T13 — 작업 카드. 프로젝트·폴더·plan vN·Status·Verify·역할 상태 배지·pendingAction 표시.
 import type { Display, PendingAction, State } from "../api";
+import { isCommitDone } from "../api";
 
 // 표시 상태별 색·라벨 (plan-v3 §3 B).
 const DISPLAY_COLORS: Record<Display, string> = {
@@ -69,13 +70,13 @@ interface Props {
   coderDisplay: Display | null;
 }
 
-// Commit 칸 — 서버 orchestrator.ts:691과 같은 판정: git 아님·계획 없음 → "—", commitDone → "완료", 그 외 "계획".
+// Commit 칸 — 서버 orchestrator.ts:691과 같은 판정: git 아님·계획 없음 → "—", commitDoneT === 최신 todo → "완료", 그 외 "계획".
 function commitLabel(state: State | null): string {
   const task = state?.task;
   if (!task || !state?.todo) return "—";
   const isGit = state.projectInfo?.[task.project]?.git != null;
   if (!isGit || !state.todo.commitPlanExists) return "—";
-  return task.commitDone ? "완료" : "계획";
+  return isCommitDone(state) ? "완료" : "계획";
 }
 
 function TaskCard({ state, planDisplay, verifyDisplay, coderDisplay }: Props) {

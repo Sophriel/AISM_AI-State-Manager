@@ -5,6 +5,7 @@ import {
   closeTask,
   commitDone,
   fetchState,
+  isCommitDone,
   relaunch,
   saveWindowSize,
   setEndpoint,
@@ -283,7 +284,7 @@ function App() {
                 <button
                   type="button"
                   onClick={handleCommitDone}
-                  disabled={busy || state.snapshot?.status !== "DONE" || state.task.commitDone}
+                  disabled={busy || state.snapshot?.status !== "DONE" || isCommitDone(state)}
                 >
                   커밋 완료
                 </button>

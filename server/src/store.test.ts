@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { Store, newTask, makeTaskId } from "./store.js";
+import { Store, newTask, makeTaskId, migrateCommitDone, isCurrentState } from "./store.js";
 
 let dir: string;
 
@@ -242,6 +242,91 @@ describe("Store", () => {
   });
 });
 
+describe("migrateCommitDone (plan-v5 P5-b)", () => {
+  const base = {
+    id: "t-1",
+    project: "EWE",
+    folder: null,
+    startedAt: 1000,
+    assigned: { planner: null, verifier: null, coder: null },
+    record: { notified: [], consecutiveBlocks: {}, instructed: [] },
+    undelivered: [],
+  };
+
+  it("commitDone true → commitDoneT 0, commitDone 제거", () => {
+    const p = { tasks: { "t-1": { ...base, commitDone: true } } };
+    migrateCommitDone(p);
+    expect(p.tasks["t-1"].commitDoneT).toBe(0);
+    expect("commitDone" in p.tasks["t-1"]).toBe(false);
+  });
+
+  it("commitDone false → commitDoneT null, commitDone 제거", () => {
+    const p = { tasks: { "t-1": { ...base, commitDone: false } } };
+    migrateCommitDone(p);
+    expect(p.tasks["t-1"].commitDoneT).toBeNull();
+    expect("commitDone" in p.tasks["t-1"]).toBe(false);
+  });
+
+  it("이미 commitDoneT가 있으면 그대로 (commitDone은 건드리지 않음)", () => {
+    const p = { tasks: { "t-1": { ...base, commitDone: true, commitDoneT: 3 } } };
+    migrateCommitDone(p);
+    expect(p.tasks["t-1"].commitDoneT).toBe(3);
+    expect("commitDone" in p.tasks["t-1"]).toBe(true);
+  });
+
+  it("tasks 없음·비객체 → 예외 없음", () => {
+    expect(() => migrateCommitDone(null)).not.toThrow();
+    expect(() => migrateCommitDone("x")).not.toThrow();
+    expect(() => migrateCommitDone({})).not.toThrow();
+    expect(() => migrateCommitDone({ tasks: "x" })).not.toThrow();
+  });
+
+  it("이전 형식 state.json → new Store(dir) 후 작업 유지·commitDoneT 0", () => {
+    fs.writeFileSync(
+      path.join(dir, "state.json"),
+      JSON.stringify({
+        tasks: { "t-1": { ...base, commitDone: true } },
+        sessions: {},
+        codingLocks: {},
+        codingQueue: [],
+      }),
+      "utf8",
+    );
+    const s = new Store(dir);
+    expect(s.state.tasks["t-1"].commitDoneT).toBe(0);
+  });
+});
+
+describe("isCurrentState commitDoneT (plan-v5 P5-a)", () => {
+  const base = {
+    id: "t-1",
+    project: "EWE",
+    folder: null,
+    startedAt: 1000,
+    assigned: { planner: null, verifier: null, coder: null },
+    record: { notified: [], consecutiveBlocks: {}, instructed: [] },
+    undelivered: [],
+  };
+  const wrap = (commitDoneT: unknown) => ({
+    tasks: { "t-1": { ...base, commitDoneT } },
+    sessions: {},
+    codingLocks: {},
+    codingQueue: [],
+  });
+
+  it("null·0·3 허용", () => {
+    expect(isCurrentState(wrap(null))).toBe(true);
+    expect(isCurrentState(wrap(0))).toBe(true);
+    expect(isCurrentState(wrap(3))).toBe(true);
+  });
+
+  it("-1·1.5·\"1\" 거부", () => {
+    expect(isCurrentState(wrap(-1))).toBe(false);
+    expect(isCurrentState(wrap(1.5))).toBe(false);
+    expect(isCurrentState(wrap("1"))).toBe(false);
+  });
+});
+
 describe("Store 작업별 기록 (T2)", () => {
   it("두 작업 ID에 append 후 각자 read 결과가 섞이지 않음", () => {
     const s = new Store(dir);
@@ -329,7 +414,7 @@ describe("Task endpoints 키 (역할별 엔드포인트 선택)", () => {
     assigned: { planner: null, verifier: null, coder: null },
     record: { notified: [], consecutiveBlocks: {}, instructed: [] },
     undelivered: [],
-    commitDone: false,
+    commitDoneT: null,
   };
 
   it("(a) 키 8개 작업이 든 상태 통과", () => {
